@@ -1,0 +1,9 @@
+# BRP 控制面配置模板 —— 复制为同目录 config.yaml 并修改（config.yaml 不入库）
+#   cp configs/config.example.yaml configs/config.yaml
+
+server:
+  port: 8080
+
+database:
+  # DSN 中的 password 改为 deploy/env/.env 里的 POSTGRES_PASSWORD
+  dsn: "host=localhost port=5432 user=brp password=CHANGE_ME dbname=broker_resilience sslmode=disable TimeZone=Asia/Shanghai"

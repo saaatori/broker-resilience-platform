@@ -1,0 +1,15 @@
+# air 热重载配置（task dev:backend 使用）
+# 监听 .go / .yaml 变更，自动重新编译并重启服务
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/main.exe ./cmd/server"
+bin = "tmp/main.exe"
+include_ext = ["go", "yaml"]
+exclude_dir = ["tmp", "vendor"]
+delay = 1000
+stop_on_root = false
+
+[log]
+time = true
