@@ -1,0 +1,44 @@
+# ===== Go =====
+backend/tmp/            # air 热重载输出
+*.exe
+*.exe~
+*.test
+*.out
+
+# ===== Node / 前端 =====
+node_modules/
+frontend/dist/
+*.local
+.vite/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# ===== 运行产物与数据 =====
+/work/                  # Agent 执行工作目录（params.json / JSONL / zip）
+*.log
+data/                   # 本地数据卷
+*.jsonl
+*.zip
+
+# ===== 环境与密钥（模板 .example 可提交）=====
+.env
+.env.*
+!.env.example
+backend/configs/config.yaml
+agent/.env
+
+# ===== IDE =====
+.idea/
+.vscode/
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+*.swp

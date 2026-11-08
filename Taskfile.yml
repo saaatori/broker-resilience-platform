@@ -1,0 +1,76 @@
+version: '3'
+
+tasks:
+  install:
+    desc: 安装前端依赖
+    dir: frontend
+    cmds:
+      - npm install
+
+  dev:frontend:
+    desc: 启动前端开发服务器（Vite）
+    dir: frontend
+    cmds:
+      - npm run dev
+
+  dev:backend:
+    desc: 启动后端开发服务器（air 热重载）
+    dir: backend
+    cmds:
+      - air -c .air.toml
+
+  up:
+    desc: 启动平台基础设施（Compose：PG/Redis/Prometheus 等）
+    cmds:
+      - docker compose -f deploy/compose/platform.yml up -d
+
+  down:
+    desc: 停止平台基础设施
+    cmds:
+      - docker compose -f deploy/compose/platform.yml down
+
+  test:
+    desc: 运行全部单元测试
+    cmds:
+      - task: test:backend
+      - task: test:agent
+
+  test:backend:
+    desc: Go 单元测试
+    dir: backend
+    cmds:
+      - go test ./...
+
+  test:agent:
+    desc: Agent 单元测试
+    dir: agent
+    cmds:
+      - pytest tests
+
+  lint:
+    desc: 代码检查（golangci-lint / ruff / eslint）
+    cmds:
+      - task: lint:backend
+      - task: lint:agent
+      - task: lint:frontend
+
+  lint:backend:
+    dir: backend
+    cmds:
+      - golangci-lint run ./...
+
+  lint:agent:
+    dir: agent
+    cmds:
+      - ruff check .
+
+  lint:frontend:
+    dir: frontend
+    cmds:
+      - npm run lint
+
+  fmt:
+    desc: 格式化全部代码
+    cmds:
+      - cmd: gofmt -l -w backend
+      - cmd: ruff format agent
