@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
 
+	"github.com/saaatori/broker-resilience-platform/backend/internal/auth"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
 )
 
@@ -23,6 +24,10 @@ type Config struct {
 	Database struct {
 		DSN string `yaml:"dsn"`
 	} `yaml:"database"`
+	Auth struct {
+		SeedUsername string `yaml:"seed_username"` // 种子管理员用户名，空则回退 admin
+		SeedPassword string `yaml:"seed_password"` // 种子管理员密码，空则回退 admin123
+	} `yaml:"auth"`
 }
 
 // loadConfig 读取并解析 YAML 配置，未填字段使用代码内默认值。
@@ -53,7 +58,17 @@ func main() {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
 
+	// auth 模块装配（三件套惯例）：repository → service → 种子管理员 → handler。
+	userRepo := auth.NewUserRepository(db)
+	authSvc := auth.NewService(userRepo)
+	if err := authSvc.SeedAdmin(cfg.Auth.SeedUsername, cfg.Auth.SeedPassword); err != nil {
+		log.Fatalf("初始化种子管理员失败: %v", err)
+	}
+
 	r := gin.Default()
+
+	authHandler := auth.NewHandler(authSvc)
+	authHandler.RegisterRoutes(r.Group("/api/v1"))
 
 	// /healthz 健康检查：连带探活数据库，供 Compose 探针与排障使用。
 	r.GET("/healthz", func(c *gin.Context) {

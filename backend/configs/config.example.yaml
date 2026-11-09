@@ -7,3 +7,8 @@ server:
 database:
   # DSN 中的 password 改为 deploy/env/.env 里的 POSTGRES_PASSWORD
   dsn: "host=localhost port=5432 user=brp password=CHANGE_ME dbname=broker_resilience sslmode=disable TimeZone=Asia/Shanghai"
+
+auth:
+  # 种子管理员：首次启动且库中无用户时写入；两项留空则回退 admin / admin123
+  seed_username: "admin"
+  seed_password: "CHANGE_ME"
