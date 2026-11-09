@@ -1,0 +1,62 @@
+# 排障手册（Troubleshooting）
+
+> 记录开发过程中实际踩过的坑：现象 → 原因 → 解决。按时间自然积累，同类的坑归到同一节。
+> 本文档同时是论文附录的工程实践素材。
+
+---
+
+## 容器与 Docker
+
+### 1. PostgreSQL 18 容器启动即崩溃重启（2026-11-08）
+
+**现象**：`brp-postgres` 状态 `Restarting (1)`，日志输出大段说明并以 `Error: in 18+, these Docker images are configured to store database data...` 结束。
+
+**原因**：PostgreSQL 18 官方镜像的破坏性变更——数据目录改为版本化子目录结构，要求卷挂载到父目录 `/var/lib/postgresql`；旧惯例挂载 `/var/lib/postgresql/data` 会被识别为"升级残留"而拒绝启动（为 pg_upgrade --link 兼容性设计）。
+
+**解决**：compose 中卷改为 `brp_pgdata:/var/lib/postgresql`；因首次初始化失败过，需 `docker compose down -v` 清卷后重建。
+
+### 2. docker 命令报 npipe 连接失败（2026-11-08）
+
+**现象**：`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`。
+
+**原因**：Docker Desktop 未运行（WSL2 后端的守护进程不在）。
+
+**解决**：启动 Docker Desktop 后等待托盘图标稳定（或轮询 `docker info` 直到成功）再执行 compose 命令。
+
+## Go 工具链
+
+### 3. go install 报 dial tcp 127.0.0.1:443（2026-11-08）
+
+**现象**：`go install ...@latest` 失败：`Get "https://proxy.golang.org/...": dial tcp 127.0.0.1:443: connectex: No connection could be made...`
+
+**原因**：两个因素叠加：① GOPROXY 仍为默认的 proxy.golang.org；② 环境残留 `HTTP_PROXY/HTTPS_PROXY` 指向本机未运行的代理（127.0.0.1），请求根本没出本机。
+
+**解决**：`go env -w GOPROXY=https://goproxy.cn,direct` + `go env -w HTTP_PROXY= HTTPS_PROXY=`（并清当前会话变量）。若仍报 127.0.0.1，检查 hosts 文件是否把 proxy.golang.org 指向了本机。
+
+### 4. 终端找不到 go 命令（2026-11-08）
+
+**现象**：Git Bash 中 `go: command not found`，但新开 PowerShell 正常。
+
+**原因**：Go 安装（本机装在 `F:\Go`）写入的是系统 PATH，安装前已开着的终端会话不会自动刷新。
+
+**解决**：重开终端；或临时 `export PATH=/f/Go/bin:$PATH`。同类问题适用于所有新装 CLI（go install 装的工具在 `%USERPROFILE%\go\bin`，需确认该目录已入 PATH）。
+
+## Python 环境
+
+### 5. pip 装包位置与预期不符（2026-11-08）
+
+**现象**：PowerShell 提示符带 `(base)`，`pip install` 装进了 Miniconda base 而非独立安装的 Python 3.13。
+
+**原因**：本机双 Python 并存（独立 3.13 + Miniconda），conda init 默认自动激活 base，激活态下 `python/pip` 指向 conda。
+
+**解决**：`conda config --set auto_activate_base false` 后重开终端（对旧窗口不生效），确认 `pip --version` 指向独立 3.13。项目依赖一律走 `uv` + 仓库内 `.venv`，与全局环境解耦。
+
+## 数据库客户端
+
+### 6. DBeaver 看不到新建的业务库（2026-11-08）
+
+**现象**：连接成功但左侧树只有 `postgres` 库，没有 `broker_resilience`。
+
+**原因**：DBeaver 对 PostgreSQL 默认只显示连接配置中指定的那一个库。
+
+**解决**：编辑连接 → PostgreSQL 标签页 → 勾选 **Show all databases** → 刷新。`docker exec brp-postgres psql -U brp -l` 可随时佐证库是否存在。

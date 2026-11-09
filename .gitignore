@@ -42,3 +42,8 @@ agent/.env
 .DS_Store
 Thumbs.db
 *.swp
+
+# ===== 本地参考文档（仅本地查阅，不入库；原件在 F:\BrokerResilience-docs）=====
+docs/dev/*.docx
+docs/dev/实施规划-V1.md
+docs/dev/开发环境参数与工程目录结构.md
