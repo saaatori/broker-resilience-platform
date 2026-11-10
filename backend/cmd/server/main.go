@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/auth"
+	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
 )
 
@@ -87,7 +88,10 @@ func main() {
 	r := gin.Default()
 
 	authHandler := auth.NewHandler(authSvc)
-	authHandler.RegisterRoutes(r.Group("/api/v1"))
+	apiV1 := r.Group("/api/v1")
+	authHandler.RegisterRoutes(apiV1) // 公开：/auth/login
+	authed := apiV1.Group("", middleware.JWTAuth(authSvc.ParseToken))
+	authHandler.RegisterProtectedRoutes(authed) // 受保护：/me
 
 	// /healthz 健康检查：连带探活数据库，供 Compose 探针与排障使用。
 	r.GET("/healthz", func(c *gin.Context) {

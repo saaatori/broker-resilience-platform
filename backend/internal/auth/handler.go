@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
 )
 
 // Handler HTTP 层：解析请求、调用 Service、组织响应。
@@ -43,7 +45,17 @@ func (h *Handler) login(c *gin.Context) {
 	}
 }
 
-// RegisterRoutes 把本模块路由挂到 /api/v1 分组。
+// RegisterRoutes 把本模块公开路由挂到 /api/v1 分组（无需登录）。
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/auth/login", h.login)
+}
+
+// RegisterProtectedRoutes 把需要登录的路由挂到受 JWTAuth 保护的分组。
+func (h *Handler) RegisterProtectedRoutes(rg *gin.RouterGroup) {
+	rg.GET("/me", h.me)
+}
+
+// me GET /api/v1/me：返回当前登录用户名（由 JWTAuth 中间件解析令牌后写入 context）。
+func (h *Handler) me(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"username": c.GetString(middleware.UsernameKey)})
 }

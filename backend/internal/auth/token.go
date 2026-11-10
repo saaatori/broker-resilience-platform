@@ -22,3 +22,19 @@ func (s *Service) issueToken(username string) (string, error) {
 	}
 	return signed, nil
 }
+
+// ParseToken 解析并校验 JWT，供 middleware 经参数注入使用。
+// 格式错 / 签名错 / 算法不在白名单 / 缺 exp / 已过期 / iat 在未来一律返回错误。
+// WithValidMethods 显式锁定 HS256（防 alg=none 与 HS-RS 混淆攻击）；
+// WithExpirationRequired 拒绝不带 exp 的令牌（我们签发的令牌必带）；
+// WithIssuedAt 校验签发时间不在未来。
+func (s *Service) ParseToken(tokenString string) (*jwt.RegisteredClaims, error) {
+	claims := &jwt.RegisteredClaims{}
+	_, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+		return []byte(s.cfg.JWTSecret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
+	if err != nil {
+		return nil, fmt.Errorf("parse jwt: %w", err)
+	}
+	return claims, nil
+}
