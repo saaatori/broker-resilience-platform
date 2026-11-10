@@ -27,6 +27,8 @@ type Config struct {
 	Auth struct {
 		SeedUsername string `yaml:"seed_username"` // 种子管理员用户名，空则回退 admin
 		SeedPassword string `yaml:"seed_password"` // 种子管理员密码，空则回退 admin123
+		JWTSecret    string `yaml:"jwt_secret"`    // HS256 签名密钥，必填
+		TokenTTL     string `yaml:"token_ttl"`     // 令牌有效期（Go duration 格式），空则 24h
 	} `yaml:"auth"`
 }
 
@@ -53,6 +55,20 @@ func main() {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
+	// JWT 配置校验（fail-fast：先于连库，配置错误不被数据库错误掩盖）；TTL 空则默认 24h。
+	if cfg.Auth.JWTSecret == "" || cfg.Auth.JWTSecret == "CHANGE_ME" {
+		log.Fatalf("config.yaml 缺少 auth.jwt_secret 或仍为模板占位值 CHANGE_ME（本地用 openssl rand -hex 32 生成随机串）")
+	}
+	tokenTTL := 24 * time.Hour
+	if cfg.Auth.TokenTTL != "" {
+		if tokenTTL, err = time.ParseDuration(cfg.Auth.TokenTTL); err != nil {
+			log.Fatalf("auth.token_ttl 解析失败（示例 24h / 2h）: %v", err)
+		}
+		if tokenTTL <= 0 {
+			log.Fatalf("auth.token_ttl 必须为正时长，当前值 %q", cfg.Auth.TokenTTL)
+		}
+	}
+
 	db, err := storage.OpenPG(cfg.Database.DSN)
 	if err != nil {
 		log.Fatalf("连接数据库失败: %v", err)
@@ -60,7 +76,10 @@ func main() {
 
 	// auth 模块装配（三件套惯例）：repository → service → 种子管理员 → handler。
 	userRepo := auth.NewUserRepository(db)
-	authSvc := auth.NewService(userRepo)
+	authSvc := auth.NewService(userRepo, auth.ServiceConfig{
+		JWTSecret: cfg.Auth.JWTSecret,
+		TokenTTL:  tokenTTL,
+	})
 	if err := authSvc.SeedAdmin(cfg.Auth.SeedUsername, cfg.Auth.SeedPassword); err != nil {
 		log.Fatalf("初始化种子管理员失败: %v", err)
 	}

@@ -60,3 +60,13 @@
 **原因**：DBeaver 对 PostgreSQL 默认只显示连接配置中指定的那一个库。
 
 **解决**：编辑连接 → PostgreSQL 标签页 → 勾选 **Show all databases** → 刷新。`docker exec brp-postgres psql -U brp -l` 可随时佐证库是否存在。
+
+## 脚本与工具
+
+### 7. Git Bash 下 base64 解码 JWT 退出码非 0（2026-11-10）
+
+**现象**：验收脚本（`set -e`）执行到 `PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null)` 一行后**静默中断**，无任何报错；payload 内容实际已完整解出。
+
+**原因**：JWT 的 base64url 编码不带 `=` padding，段长非 4 的倍数时 coreutils `base64 -d` 会解出完整内容但以非 0 退出码结束；stderr 被丢弃、命令替换赋值语句在 `set -e` 下直接终止脚本。
+
+**解决**：管道尾加 `|| true` 容忍退出码，解码内容的正确性改由后续 `grep` 校验；手工排查时直接看输出、无视退出码即可。

@@ -12,3 +12,6 @@ auth:
   # 种子管理员：首次启动且库中无用户时写入；两项留空则回退 admin / admin123
   seed_username: "admin"
   seed_password: "CHANGE_ME"
+  # JWT：密钥必填（本地随机串，openssl rand -hex 32 生成）；TTL 为 Go duration 格式，留空默认 24h
+  jwt_secret: "CHANGE_ME"
+  token_ttl: "24h"

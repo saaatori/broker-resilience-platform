@@ -3,10 +3,13 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
@@ -16,15 +19,44 @@ import (
 type userRepository interface {
 	Count() (int64, error)
 	Create(u *model.SysUser) error
+	FindByUsername(username string) (*model.SysUser, error)
 }
 
-// Service auth 业务逻辑层：密码哈希与种子管理员。
+// ErrInvalidCredentials 用户名不存在或密码错误。两类情况统一返回此错误，不暴露用户是否存在。
+var ErrInvalidCredentials = errors.New("invalid credentials")
+
+// ServiceConfig auth 服务配置，由 main 从 config.yaml 装配。
+type ServiceConfig struct {
+	JWTSecret string        // HS256 签名密钥，main 启动时校验非空
+	TokenTTL  time.Duration // 令牌有效期
+}
+
+// Service auth 业务逻辑层：密码哈希、种子管理员与登录。
 type Service struct {
 	repo userRepository
+	cfg  ServiceConfig
 }
 
-// NewService 注入 repository 构造 Service。
-func NewService(repo userRepository) *Service { return &Service{repo: repo} }
+// NewService 注入 repository 与配置构造 Service。
+func NewService(repo userRepository, cfg ServiceConfig) *Service {
+	return &Service{repo: repo, cfg: cfg}
+}
+
+// Login 校验用户名密码，通过则签发 JWT。
+// 用户不存在与密码错误统一返回 ErrInvalidCredentials（handler 映射 401）；其余错误原样上抛（映射 500）。
+func (s *Service) Login(username, password string) (string, error) {
+	u, err := s.repo.FindByUsername(username)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", ErrInvalidCredentials
+	}
+	if err != nil {
+		return "", fmt.Errorf("find user by username: %w", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+		return "", ErrInvalidCredentials
+	}
+	return s.issueToken(username)
+}
 
 // HashPassword 生成 bcrypt 哈希（DefaultCost=10，本地开发与演示场景够用）。
 func (s *Service) HashPassword(plain string) (string, error) {
