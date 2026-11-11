@@ -12,7 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fernet/fernet-go"
+
 	"github.com/saaatori/broker-resilience-platform/backend/internal/auth"
+	"github.com/saaatori/broker-resilience-platform/backend/internal/instance"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
 )
@@ -31,6 +34,9 @@ type Config struct {
 		JWTSecret    string `yaml:"jwt_secret"`    // HS256 签名密钥，必填
 		TokenTTL     string `yaml:"token_ttl"`     // 令牌有效期（Go duration 格式），空则 24h
 	} `yaml:"auth"`
+	Instance struct {
+		EncryptKey string `yaml:"encrypt_key"` // 实例凭据 Fernet 密钥（32 字节 base64url），必填
+	} `yaml:"instance"`
 }
 
 // loadConfig 读取并解析 YAML 配置，未填字段使用代码内默认值。
@@ -70,6 +76,15 @@ func main() {
 		}
 	}
 
+	// 实例凭据加密密钥（fail-fast，与 jwt_secret 同口径）：空/占位/非法 base64 均拒绝启动。
+	if cfg.Instance.EncryptKey == "" || cfg.Instance.EncryptKey == "CHANGE_ME" {
+		log.Fatalf("config.yaml 缺少 instance.encrypt_key（本地生成：python -c \"import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"）")
+	}
+	instanceKey, err := fernet.DecodeKey(cfg.Instance.EncryptKey)
+	if err != nil {
+		log.Fatalf("instance.encrypt_key 不是合法 Fernet 密钥（32 字节 base64url）: %v", err)
+	}
+
 	db, err := storage.OpenPG(cfg.Database.DSN)
 	if err != nil {
 		log.Fatalf("连接数据库失败: %v", err)
@@ -92,6 +107,10 @@ func main() {
 	authHandler.RegisterRoutes(apiV1) // 公开：/auth/login
 	authed := apiV1.Group("", middleware.JWTAuth(authSvc.ParseToken))
 	authHandler.RegisterProtectedRoutes(authed) // 受保护：/me
+
+	// instance 模块装配：全部端点挂受保护组。
+	instanceSvc := instance.NewService(instance.NewRepository(db), instance.ServiceConfig{EncryptKey: instanceKey})
+	instance.NewHandler(instanceSvc).RegisterRoutes(authed) // 受保护：POST /instances
 
 	// /healthz 健康检查：连带探活数据库，供 Compose 探针与排障使用。
 	r.GET("/healthz", func(c *gin.Context) {

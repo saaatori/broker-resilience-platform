@@ -15,3 +15,7 @@ auth:
   # JWT：密钥必填（本地随机串，openssl rand -hex 32 生成）；TTL 为 Go duration 格式，留空默认 24h
   jwt_secret: "CHANGE_ME"
   token_ttl: "24h"
+
+instance:
+  # 实例凭据 Fernet 密钥，必填（python -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"）
+  encrypt_key: "CHANGE_ME"

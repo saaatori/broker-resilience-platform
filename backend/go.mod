@@ -3,6 +3,7 @@ module github.com/saaatori/broker-resilience-platform/backend
 go 1.27.3
 
 require (
+	github.com/fernet/fernet-go v0.0.0-20240119011108-303da6aec611
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	golang.org/x/crypto v0.48.0
