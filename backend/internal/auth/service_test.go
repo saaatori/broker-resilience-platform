@@ -238,7 +238,7 @@ func TestParseToken(t *testing.T) {
 			if claims.Subject != "admin" {
 				t.Fatalf("sub = %q, 期望 admin", claims.Subject)
 			}
-			if !claims.ExpiresAt.Time.After(time.Now()) {
+			if !claims.ExpiresAt.After(time.Now()) {
 				t.Fatalf("exp = %v, 应在未来", claims.ExpiresAt.Time)
 			}
 		})

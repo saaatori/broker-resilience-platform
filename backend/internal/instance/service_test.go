@@ -119,7 +119,7 @@ func TestCheckInstance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer ln.Close()
+		t.Cleanup(func() { _ = ln.Close() })
 		port := ln.Addr().(*net.TCPAddr).Port
 
 		ins, err := svc.Register("t-ok", "", "127.0.0.1", port, 0, "", "u", "p")
@@ -153,7 +153,7 @@ func TestCheckInstance(t *testing.T) {
 			t.Fatal(err)
 		}
 		port := ln.Addr().(*net.TCPAddr).Port
-		ln.Close()
+		_ = ln.Close()
 
 		ins, err := svc.Register("t-bad", "", "127.0.0.1", port, 0, "", "u", "p")
 		if err != nil {
