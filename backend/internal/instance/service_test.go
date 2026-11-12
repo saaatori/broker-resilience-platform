@@ -1,11 +1,59 @@
 package instance
 
 import (
+	"encoding/json"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 
 	"github.com/fernet/fernet-go"
+	"gorm.io/gorm"
+
+	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
+
+// fakeRepo instanceRepository 的内存实现（语义对齐真 repository：
+// FindByID 查无返回 gorm.ErrRecordNotFound；Save 覆盖写）。
+type fakeRepo struct {
+	nextID int64
+	items  map[int64]*model.BrokerInstance
+}
+
+func newFakeRepo() *fakeRepo {
+	return &fakeRepo{nextID: 1, items: map[int64]*model.BrokerInstance{}}
+}
+
+func (f *fakeRepo) Create(ins *model.BrokerInstance) error {
+	ins.ID = f.nextID
+	f.nextID++
+	f.items[ins.ID] = ins
+	return nil
+}
+
+func (f *fakeRepo) FindByID(id int64) (*model.BrokerInstance, error) {
+	ins, ok := f.items[id]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return ins, nil
+}
+
+func (f *fakeRepo) Save(ins *model.BrokerInstance) error {
+	f.items[ins.ID] = ins
+	return nil
+}
+
+// newRepoService 构造带内存 repo 的被测 Service。
+func newRepoService(t *testing.T) (*Service, *fakeRepo) {
+	t.Helper()
+	var key fernet.Key
+	if err := key.Generate(); err != nil {
+		t.Fatalf("生成测试密钥失败: %v", err)
+	}
+	repo := newFakeRepo()
+	return NewService(repo, ServiceConfig{EncryptKey: &key}), repo
+}
 
 func newCryptoService(t *testing.T) *Service {
 	t.Helper()
@@ -59,6 +107,75 @@ func TestPasswordCrypto(t *testing.T) {
 		other := NewService(nil, ServiceConfig{EncryptKey: &otherKey})
 		if _, err := other.DecryptPassword(enc); err == nil {
 			t.Fatal("异密钥解密应失败，实际成功")
+		}
+	})
+}
+
+// TestCheckInstance 覆盖连接检测三分支：可达 / 不可达（结果也落库）/ 实例不存在。
+func TestCheckInstance(t *testing.T) {
+	t.Run("可达端口", func(t *testing.T) {
+		svc, _ := newRepoService(t)
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		port := ln.Addr().(*net.TCPAddr).Port
+
+		ins, err := svc.Register("t-ok", "", "127.0.0.1", port, 0, "", "u", "p")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, res, err := svc.CheckInstance(ins.ID)
+		if err != nil {
+			t.Fatalf("CheckInstance 出错: %v", err)
+		}
+		if !res.Reachable || res.Error != "" {
+			t.Fatalf("应可达, 实际: %+v", res)
+		}
+		if got.Health == nil {
+			t.Fatal("可达结果未写入 health")
+		}
+		var back CheckResult
+		if err := json.Unmarshal([]byte(*got.Health), &back); err != nil {
+			t.Fatalf("health 不是合法 JSON: %v", err)
+		}
+		if !back.Reachable {
+			t.Fatal("health 回读 reachable 应为 true")
+		}
+	})
+
+	t.Run("不可达端口也落库并带原因", func(t *testing.T) {
+		svc, _ := newRepoService(t)
+		// 先占一个端口拿到确定被关闭的端口号，再关闭
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+
+		ins, err := svc.Register("t-bad", "", "127.0.0.1", port, 0, "", "u", "p")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, res, err := svc.CheckInstance(ins.ID)
+		if err != nil {
+			t.Fatalf("拨号失败不应成为 API 错误: %v", err)
+		}
+		if res.Reachable || res.Error == "" {
+			t.Fatalf("应不可达且带原因, 实际: %+v", res)
+		}
+		if got.Health == nil {
+			t.Fatal("不可达结果也应写入 health")
+		}
+	})
+
+	t.Run("实例不存在", func(t *testing.T) {
+		svc, _ := newRepoService(t)
+		_, _, err := svc.CheckInstance(9999)
+		if !errors.Is(err, ErrInstanceNotFound) {
+			t.Fatalf("应返回 ErrInstanceNotFound, 实际: %v", err)
 		}
 	})
 }

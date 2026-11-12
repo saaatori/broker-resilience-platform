@@ -1,9 +1,11 @@
 package instance
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -55,4 +57,66 @@ func (h *Handler) register(c *gin.Context) {
 // RegisterRoutes 把实例模块路由挂到受 JWT 保护的分组（本模块全部端点需登录）。
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/instances", h.register)
+	rg.POST("/instances/:id/check", h.check)
+	rg.GET("/instances/:id/health", h.health)
+}
+
+// parseID 从路径参数解析实例 id；非法返回 false（已写响应）。
+func parseID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "实例 id 不合法"})
+		return 0, false
+	}
+	return id, true
+}
+
+// check POST /api/v1/instances/:id/check：TCP 拨号检测 amqp 端口并落库 health。
+// 拨号失败是检查结果（200 + reachable=false + 原因），实例不存在才是 404。
+func (h *Handler) check(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	ins, res, err := h.svc.CheckInstance(id)
+	switch {
+	case errors.Is(err, ErrInstanceNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "实例不存在"})
+	case err != nil:
+		log.Printf("instance: 检测内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+	default:
+		c.JSON(http.StatusOK, gin.H{
+			"id":        ins.ID,
+			"name":      ins.Name,
+			"host":      ins.Host,
+			"amqp_port": ins.AmqpPort,
+			"health":    res,
+		})
+	}
+}
+
+// health GET /api/v1/instances/:id/health：回读最近一次检测结果（未检测过为 null）。
+func (h *Handler) health(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	ins, err := h.svc.FindInstance(id)
+	switch {
+	case errors.Is(err, ErrInstanceNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "实例不存在"})
+	case err != nil:
+		log.Printf("instance: 健康查询内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+	default:
+		var parsed any // health 为 *string 存 JSON 文本，解析后以对象返回；nil → null
+		if ins.Health != nil {
+			if err := json.Unmarshal([]byte(*ins.Health), &parsed); err != nil {
+				log.Printf("instance: health JSON 解析失败（实例 %d）: %v", ins.ID, err) // jsonb 列按理不会脏，记日志便于排查
+				parsed = nil
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"health": parsed})
+	}
 }

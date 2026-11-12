@@ -3,10 +3,15 @@
 package instance
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"time"
 
 	"github.com/fernet/fernet-go"
+	"gorm.io/gorm"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
@@ -14,11 +19,25 @@ import (
 // ErrInvalidKind kind 不在 external | experimental 枚举内。
 var ErrInvalidKind = errors.New("invalid instance kind")
 
+// ErrInstanceNotFound 实例 id 不存在。
+var ErrInstanceNotFound = errors.New("instance not found")
+
+// checkDialTimeout 单次连接检测的拨号超时。
+const checkDialTimeout = 3 * time.Second
+
 // kind 枚举值（总体设计表 15）。
 const (
 	KindExternal     = "external"     // 外部目标实例
 	KindExperimental = "experimental" // 平台实验实例
 )
+
+// CheckResult 一次连接检测结果；同时作为 health jsonb 的存储结构（表 15：最近健康检查结果）。
+type CheckResult struct {
+	CheckedAt time.Time `json:"checked_at"`
+	Reachable bool      `json:"reachable"`
+	LatencyMs int64     `json:"latency_ms"`
+	Error     string    `json:"error,omitempty"` // 不可达时的失败原因（网络错误文本）
+}
 
 // ServiceConfig instance 服务配置，由 main 从 config.yaml 装配。
 type ServiceConfig struct {
@@ -28,6 +47,8 @@ type ServiceConfig struct {
 // instanceRepository 是 Service 依赖的最小数据访问接口（单测可换内存实现）。
 type instanceRepository interface {
 	Create(ins *model.BrokerInstance) error
+	FindByID(id int64) (*model.BrokerInstance, error)
+	Save(ins *model.BrokerInstance) error
 }
 
 // Service instance 业务逻辑层。
@@ -96,4 +117,58 @@ func (s *Service) Register(name, kind, host string, amqpPort, mgmtPort int, vhos
 		return nil, fmt.Errorf("create broker_instance: %w", err)
 	}
 	return ins, nil
+}
+
+// CheckInstance 对实例的 amqp 端口做 TCP 拨号检测，并把结果写入 health（无论成败都落库）。
+// 拨号失败是检查结果而非错误：返回 (ins, reachable=false 的结果, nil)；
+// 只有实例不存在（ErrInstanceNotFound）与落库失败才是 error。
+func (s *Service) CheckInstance(id int64) (*model.BrokerInstance, *CheckResult, error) {
+	ins, err := s.repo.FindByID(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, ErrInstanceNotFound
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("find broker_instance: %w", err)
+	}
+
+	res := s.dial(ins)
+	enc, err := json.Marshal(res)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal check result: %w", err)
+	}
+	str := string(enc)
+	ins.Health = &str
+	if err := s.repo.Save(ins); err != nil {
+		return nil, nil, fmt.Errorf("save broker_instance health: %w", err)
+	}
+	return ins, res, nil
+}
+
+// FindInstance 按 id 查询实例（health 端点用）。
+func (s *Service) FindInstance(id int64) (*model.BrokerInstance, error) {
+	ins, err := s.repo.FindByID(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrInstanceNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find broker_instance: %w", err)
+	}
+	return ins, nil
+}
+
+// dial 对 host:amqp_port 发起一次 TCP 拨号并计时；失败原因记入 Error 字段。
+func (s *Service) dial(ins *model.BrokerInstance) *CheckResult {
+	start := time.Now()
+	// JoinHostPort 而非 Sprintf 拼接：IPv6 字面量（如 ::1）需要方括号包裹才是合法地址
+	addr := net.JoinHostPort(ins.Host, strconv.Itoa(ins.AmqpPort))
+	conn, err := net.DialTimeout("tcp", addr, checkDialTimeout)
+	latency := time.Since(start).Milliseconds()
+	res := &CheckResult{CheckedAt: time.Now(), LatencyMs: latency}
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	_ = conn.Close()
+	res.Reachable = true
+	return res
 }

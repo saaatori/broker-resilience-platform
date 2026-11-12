@@ -20,3 +20,17 @@ func NewRepository(db *gorm.DB) *Repository {
 func (r *Repository) Create(ins *model.BrokerInstance) error {
 	return r.db.Create(ins).Error
 }
+
+// FindByID 按主键查询实例；不存在返回 gorm.ErrRecordNotFound。
+func (r *Repository) FindByID(id int64) (*model.BrokerInstance, error) {
+	var ins model.BrokerInstance
+	if err := r.db.First(&ins, id).Error; err != nil {
+		return nil, err
+	}
+	return &ins, nil
+}
+
+// Save 保存实例的最新状态（当前用于回写 health）。
+func (r *Repository) Save(ins *model.BrokerInstance) error {
+	return r.db.Save(ins).Error
+}
