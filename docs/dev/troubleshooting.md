@@ -70,3 +70,17 @@
 **原因**：JWT 的 base64url 编码不带 `=` padding，段长非 4 的倍数时 coreutils `base64 -d` 会解出完整内容但以非 0 退出码结束；stderr 被丢弃、命令替换赋值语句在 `set -e` 下直接终止脚本。
 
 **解决**：管道尾加 `|| true` 容忍退出码，解码内容的正确性改由后续 `grep` 校验；手工排查时直接看输出、无视退出码即可。
+
+### 8. Jenkins 拉取 GitHub 超时 / fetch master 分支（2026-11-12）
+
+**现象**：from-SCM 管线首跑即失败：`Failed to connect to github.com port 443`，且日志里 fetch 的是 `refs/heads/master`（仓库默认分支是 main）。
+
+**原因**：两个独立问题叠加。① Jenkins 服务以 **LocalSystem** 运行，读不到用户级配置——用户 git 能通是因为 `~/.gitconfig` 配了 `http.proxy=127.0.0.1:7890`（clash），服务账户的 git 走直连被墙；② job 的 Branch Specifier 留了默认值 `*/master`。
+
+**解决**：① 代理写入 **系统级 git 配置**（`git config --system http.proxy/https.proxy http://127.0.0.1:7890`，写入 `D:\Git\Git\etc\gitconfig`，对所有账户生效，无需重启服务/改服务环境变量）；② Branch Specifier 改 `*/main`。**注意：clash 必须在运行**，含每 10 分钟的 Poll SCM，代理关闭时管线会在 checkout 阶段红。
+
+### 9. 误把文件暂存进上一次提交（2026-11-12）
+
+**现象**：`Jenkinsfile` 被误包含进 `fix(backend)` 提交（已提交未推送）。
+
+**解决**：未推送的提交可安全重写：`git reset --soft HEAD~1`（改动退回暂存区）→ `git restore --staged Jenkinsfile`（移出暂存）→ 重新提交正确内容。已推送则不建议改历史。
