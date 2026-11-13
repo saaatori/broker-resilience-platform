@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -50,7 +51,38 @@ func loadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	applyEnvOverrides(cfg)
 	return cfg, nil
+}
+
+// applyEnvOverrides 用 BRP_* 环境变量覆盖配置（容器化部署用，见 backend/Dockerfile 与 platform.yml）。
+// 仅覆盖已设置的键——本地开发不设这些变量时，行为与纯 config.yaml 完全一致。
+func applyEnvOverrides(cfg *Config) {
+	if v, ok := os.LookupEnv("BRP_SERVER_PORT"); ok {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Server.Port = p
+		} else {
+			log.Printf("BRP_SERVER_PORT=%q 非法，忽略（保持 %d）", v, cfg.Server.Port)
+		}
+	}
+	if v, ok := os.LookupEnv("BRP_DATABASE_DSN"); ok {
+		cfg.Database.DSN = v
+	}
+	if v, ok := os.LookupEnv("BRP_AUTH_SEED_USERNAME"); ok {
+		cfg.Auth.SeedUsername = v
+	}
+	if v, ok := os.LookupEnv("BRP_AUTH_SEED_PASSWORD"); ok {
+		cfg.Auth.SeedPassword = v
+	}
+	if v, ok := os.LookupEnv("BRP_AUTH_JWT_SECRET"); ok {
+		cfg.Auth.JWTSecret = v
+	}
+	if v, ok := os.LookupEnv("BRP_AUTH_TOKEN_TTL"); ok {
+		cfg.Auth.TokenTTL = v
+	}
+	if v, ok := os.LookupEnv("BRP_INSTANCE_ENCRYPT_KEY"); ok {
+		cfg.Instance.EncryptKey = v
+	}
 }
 
 func main() {

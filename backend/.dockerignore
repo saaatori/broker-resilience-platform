@@ -1,0 +1,4 @@
+# air 热重载产物不进构建上下文
+tmp/
+# 本地真实配置含密钥，绝不进构建层（最终镜像只用 config.container.yaml）
+configs/config.yaml

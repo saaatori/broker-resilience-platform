@@ -1,0 +1,9 @@
+[project]
+name = "brp-agent"
+version = "0.1.0"
+description = "BRP 执行面 Agent（Python）：注册/心跳/领取/执行/回传（M2 起实现）"
+requires-python = ">=3.13"
+# 占位阶段零第三方依赖；FastAPI/httpx/pika/docker-py 随 M2 主循环引入并锁定
+
+[tool.ruff]
+line-length = 100

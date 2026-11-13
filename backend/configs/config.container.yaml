@@ -1,0 +1,16 @@
+# 容器内置最小配置：真实值经 BRP_* 环境变量覆盖（Dockerfile 打入镜像；占位值不用于任何真实环境）
+# 本地开发仍使用 configs/config.yaml（不入库）。
+server:
+  port: 8080
+
+database:
+  dsn: "host=postgres port=5432 user=brp password=CHANGE_ME dbname=broker_resilience sslmode=disable TimeZone=Asia/Shanghai"
+
+auth:
+  seed_username: "admin"
+  seed_password: ""
+  jwt_secret: "CHANGE_ME" # 容器必须经 BRP_AUTH_JWT_SECRET 注入，否则 fail-fast 拒绝启动
+  token_ttl: "24h"
+
+instance:
+  encrypt_key: "CHANGE_ME" # 同上，经 BRP_INSTANCE_ENCRYPT_KEY 注入
