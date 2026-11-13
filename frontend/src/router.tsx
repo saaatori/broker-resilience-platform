@@ -5,6 +5,7 @@ import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 
 import { me } from './api/auth'
 import BasicLayout from './layouts/BasicLayout'
+import InstancesPage from './pages/instances'
 import LoginPage from './pages/login'
 import { useAuthStore } from './stores/authStore'
 
@@ -64,6 +65,7 @@ export default function AppRoutes() {
       <Route element={<AuthGuard />}>
         <Route path="/" element={<BasicLayout />}>
           <Route index element={<Home />} />
+          <Route path="instances" element={<InstancesPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
