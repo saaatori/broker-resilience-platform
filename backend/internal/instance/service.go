@@ -48,6 +48,7 @@ type ServiceConfig struct {
 type instanceRepository interface {
 	Create(ins *model.BrokerInstance) error
 	FindByID(id int64) (*model.BrokerInstance, error)
+	FindAll() ([]model.BrokerInstance, error)
 	Save(ins *model.BrokerInstance) error
 }
 
@@ -142,6 +143,15 @@ func (s *Service) CheckInstance(id int64) (*model.BrokerInstance, *CheckResult, 
 		return nil, nil, fmt.Errorf("save broker_instance health: %w", err)
 	}
 	return ins, res, nil
+}
+
+// ListInstances 返回全部实例（列表页用）。
+func (s *Service) ListInstances() ([]model.BrokerInstance, error) {
+	list, err := s.repo.FindAll()
+	if err != nil {
+		return nil, fmt.Errorf("find all broker_instance: %w", err)
+	}
+	return list, nil
 }
 
 // FindInstance 按 id 查询实例（health 端点用）。

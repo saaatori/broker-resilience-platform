@@ -8,6 +8,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
 
 // Handler HTTP 层：解析请求、调用 Service、组织响应。
@@ -56,9 +58,56 @@ func (h *Handler) register(c *gin.Context) {
 
 // RegisterRoutes 把实例模块路由挂到受 JWT 保护的分组（本模块全部端点需登录）。
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
+	rg.GET("/instances", h.list)
 	rg.POST("/instances", h.register)
 	rg.POST("/instances/:id/check", h.check)
 	rg.GET("/instances/:id/health", h.health)
+}
+
+// parseHealth 把 health jsonb 字符串解析为对象；空/脏数据返回 nil（脏数据记日志）。
+func parseHealth(ins *model.BrokerInstance) any {
+	if ins.Health == nil {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(*ins.Health), &parsed); err != nil {
+		log.Printf("instance: health JSON 解析失败（实例 %d）: %v", ins.ID, err)
+		return nil
+	}
+	return parsed
+}
+
+// instanceToResp 组装对外响应 DTO。
+// 模型 PasswordEnc 带 json:"-"，此处再显式白名单字段——双保险不回显密码。
+func instanceToResp(ins *model.BrokerInstance) gin.H {
+	return gin.H{
+		"id":         ins.ID,
+		"name":       ins.Name,
+		"kind":       ins.Kind,
+		"host":       ins.Host,
+		"amqp_port":  ins.AmqpPort,
+		"mgmt_port":  ins.MgmtPort,
+		"vhost":      ins.Vhost,
+		"username":   ins.Username,
+		"health":     parseHealth(ins),
+		"created_at": ins.CreatedAt,
+		"updated_at": ins.UpdatedAt,
+	}
+}
+
+// list GET /api/v1/instances：全部实例，按 id 升序。
+func (h *Handler) list(c *gin.Context) {
+	list, err := h.svc.ListInstances()
+	if err != nil {
+		log.Printf("instance: 列表查询内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+		return
+	}
+	resp := make([]gin.H, 0, len(list)) // 空列表返回 [] 而非 null
+	for i := range list {
+		resp = append(resp, instanceToResp(&list[i]))
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // parseID 从路径参数解析实例 id；非法返回 false（已写响应）。
@@ -110,13 +159,6 @@ func (h *Handler) health(c *gin.Context) {
 		log.Printf("instance: 健康查询内部错误: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
 	default:
-		var parsed any // health 为 *string 存 JSON 文本，解析后以对象返回；nil → null
-		if ins.Health != nil {
-			if err := json.Unmarshal([]byte(*ins.Health), &parsed); err != nil {
-				log.Printf("instance: health JSON 解析失败（实例 %d）: %v", ins.ID, err) // jsonb 列按理不会脏，记日志便于排查
-				parsed = nil
-			}
-		}
-		c.JSON(http.StatusOK, gin.H{"health": parsed})
+		c.JSON(http.StatusOK, gin.H{"health": parseHealth(ins)})
 	}
 }

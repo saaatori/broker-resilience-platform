@@ -179,3 +179,49 @@ func TestCheckInstance(t *testing.T) {
 		}
 	})
 }
+
+// FindAll 按 id 升序返回全部实例（对齐真 repository 语义）。
+func (f *fakeRepo) FindAll() ([]model.BrokerInstance, error) {
+	list := make([]model.BrokerInstance, 0, len(f.items))
+	for i := int64(1); i < f.nextID; i++ {
+		if ins, ok := f.items[i]; ok {
+			list = append(list, *ins)
+		}
+	}
+	return list, nil
+}
+
+// TestListInstances 覆盖列表语义：空库返回空切片（handler 据此输出 []）、多条按 id 升序。
+func TestListInstances(t *testing.T) {
+	t.Run("空库返回空切片", func(t *testing.T) {
+		svc, _ := newRepoService(t)
+		list, err := svc.ListInstances()
+		if err != nil {
+			t.Fatalf("ListInstances 出错: %v", err)
+		}
+		if len(list) != 0 {
+			t.Fatalf("空库应返回空切片, 实际 %d 条", len(list))
+		}
+	})
+
+	t.Run("多条按id升序", func(t *testing.T) {
+		svc, _ := newRepoService(t)
+		for _, name := range []string{"c", "a", "b"} {
+			if _, err := svc.Register(name, "", "127.0.0.1", 0, 0, "", "u", "p"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		list, err := svc.ListInstances()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 3 {
+			t.Fatalf("应 3 条, 实际 %d", len(list))
+		}
+		for i := 1; i < len(list); i++ {
+			if list[i-1].ID >= list[i].ID {
+				t.Fatalf("未按 id 升序: [%d]=%d >= [%d]=%d", i-1, list[i-1].ID, i, list[i].ID)
+			}
+		}
+	})
+}

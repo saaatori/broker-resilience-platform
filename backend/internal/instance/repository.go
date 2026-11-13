@@ -30,6 +30,15 @@ func (r *Repository) FindByID(id int64) (*model.BrokerInstance, error) {
 	return &ins, nil
 }
 
+// FindAll 返回全部实例，按 id 升序（列表页用）。
+func (r *Repository) FindAll() ([]model.BrokerInstance, error) {
+	var list []model.BrokerInstance
+	if err := r.db.Order("id").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
 // Save 保存实例的最新状态（当前用于回写 health）。
 func (r *Repository) Save(ins *model.BrokerInstance) error {
 	return r.db.Save(ins).Error
