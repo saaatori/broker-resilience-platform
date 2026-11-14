@@ -1,0 +1,120 @@
+# 实验环境模板（M1 第 16 天）——每任务一套，由 agent/envmgr/lab_factory.py（第 17 天）渲染拉起。
+# 渲染契约：纯文本替换三占位符 <TASK_ID> / <EXECUTION_ID> / <NET_NAME>（NET_NAME = brp_task_<TASK_ID>）；
+#           同款 <TASK_ID> 占位符亦在 deploy/lab/toxiproxy.json 中，factory 须一并渲染。
+# 规矩（实施规划 §7、决策 8/9；总体设计表 11）：
+# - 刻意不用 compose 变量插值：防空变量静默重建容器（troubleshooting #13），渲染即纯文本替换；
+# - 不发布宿主机端口：Prometheus / Agent 经 docker network connect 跨网访问（本地验收用临时 override）；
+# - restart 一律 "no"：故障策略 kill 的容器不得被自动复活，恢复由策略 recover 显式执行（M3 依赖）；
+# - 限额必填：broker 512M / 其余 256M / cpus 1.0；
+# - label 三件套 brp.task / brp.execution / brp.role：Agent 只按 label 白名单操作实验容器。
+# producer / consumer / recorder 为占位入口（sleep infinity），第 20 天换 lab/Dockerfile 三合一镜像真实入口。
+
+services:
+  broker:
+    image: rabbitmq:4-management
+    container_name: brp_<TASK_ID>_broker
+    restart: "no"
+    # 先决配置之一：rabbitmq_prometheus 插件（决策 9）；--offline 在服务启动前写入启用清单，天然幂等
+    command: ["sh", "-c", "rabbitmq-plugins enable --offline rabbitmq_prometheus && exec docker-entrypoint.sh rabbitmq-server"]
+    labels:
+      brp.task: "<TASK_ID>"
+      brp.execution: "<EXECUTION_ID>"
+      brp.role: "broker"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    networks:
+      - lab-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  proxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    container_name: brp_<TASK_ID>_proxy
+    restart: "no"
+    # up(:5672)=生产路径 / down(:5673)=消费路径（总体设计部署图）；静态代理配置在此，
+    # 网络故障策略（M3）经 :8474 控制端口以 API 注入/移除 toxic
+    command: ["-host", "0.0.0.0", "-config", "/etc/toxiproxy/toxiproxy.json"]
+    volumes:
+      - ../lab/toxiproxy.json:/etc/toxiproxy/toxiproxy.json:ro
+    labels:
+      brp.task: "<TASK_ID>"
+      brp.execution: "<EXECUTION_ID>"
+      brp.role: "proxy"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    networks:
+      - lab-net
+
+  producer:
+    image: brp-lab:dev                     # 第 20 天 lab/Dockerfile 三合一镜像；今天仅作 config 校验
+    container_name: brp_<TASK_ID>_producer
+    restart: "no"
+    command: ["sleep", "infinity"]         # 占位入口：第 19/20 天换 producer.py（经 proxy:5672 发布）
+    labels:
+      brp.task: "<TASK_ID>"
+      brp.execution: "<EXECUTION_ID>"
+      brp.role: "producer"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    networks:
+      - lab-net
+
+  consumer:
+    image: brp-lab:dev
+    container_name: brp_<TASK_ID>_consumer
+    restart: "no"
+    command: ["sleep", "infinity"]         # 占位入口：第 20 天换 consumer.py（经 proxy:5673 订阅）
+    labels:
+      brp.task: "<TASK_ID>"
+      brp.execution: "<EXECUTION_ID>"
+      brp.role: "consumer"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    networks:
+      - lab-net
+
+  recorder:
+    image: brp-lab:dev
+    container_name: brp_<TASK_ID>_recorder
+    restart: "no"
+    command: ["sleep", "infinity"]         # 占位入口：第 18 天交付 recorder.py，第 20 天随三合一镜像换入入口
+    labels:
+      brp.task: "<TASK_ID>"
+      brp.execution: "<EXECUTION_ID>"
+      brp.role: "recorder"
+    volumes:
+      - jsonl:/data                        # 结果记录器共享卷（表 11）：Agent 观察窗口后读取对账，再 zip 归档
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    networks:
+      - lab-net
+
+networks:
+  lab-net:
+    name: <NET_NAME>                       # = brp_task_<TASK_ID>（spec 原文：网络名与容器名前缀不同，勿"纠正"）
+    labels:
+      brp.task: "<TASK_ID>"
+      brp.execution: "<EXECUTION_ID>"
+
+volumes:
+  jsonl:
+    name: brp_<TASK_ID>_jsonl

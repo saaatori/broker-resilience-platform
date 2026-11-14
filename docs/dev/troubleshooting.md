@@ -116,3 +116,11 @@
 **原因**：platform.yml 的变量全部来自 `--env-file deploy/env/.env`。不带该参数执行 `docker compose -f … up -d` 时，`${BRP_AUTH_JWT_SECRET}` 等解析为空串；与现有容器配置不同即触发**以空 env 重建**——go 的启动 fail-fast（空密钥拒绝启动）随即崩溃循环。Taskfile 的 `up` 任务此前一直缺该参数，是长期埋着的雷。
 
 **解决**：带 `--env-file deploy/env/.env` 重新 `up`（配置变化自动重建）；Taskfile 的 up/down 已补参数。手工执行 compose 同理必须带。防御启示：fail-fast 在此正是"哨兵"——崩溃循环看着吓人，但比空密钥静默上线好得多。
+
+### 14. 实验栈经 Toxiproxy 连接秒断：reset by peer（2026-11-14，M1 第 16 天）
+
+**现象**：容器网络内 pika 连 `brp_<taskId>_proxy:5672` 立即报 `IncompatibleProtocolError: Connection reset by peer`；同容器直连 `brp_<taskId>_broker:5672` 正常。
+
+**原因**：只渲染了 `lab-template.yml`，漏渲染 `deploy/lab/toxiproxy.json`（模板 proxy 服务挂载的就是它）——upstream 仍是 `brp_<TASK_ID>_broker` 占位符主机名，toxiproxy 解析不到上游主机，接受连接后即刻断开。
+
+**解决**：渲染必须双文件成套（yml + json 一并做占位符替换），并断言渲染产物无 `<TASK_ID>` 残留。已写入第 17 天 lab_factory 计划要点（评审建议 2）。

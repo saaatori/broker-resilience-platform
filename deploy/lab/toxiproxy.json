@@ -1,0 +1,14 @@
+[
+  {
+    "name": "up",
+    "listen": "0.0.0.0:5672",
+    "upstream": "brp_<TASK_ID>_broker:5672",
+    "enabled": true
+  },
+  {
+    "name": "down",
+    "listen": "0.0.0.0:5673",
+    "upstream": "brp_<TASK_ID>_broker:5672",
+    "enabled": true
+  }
+]
