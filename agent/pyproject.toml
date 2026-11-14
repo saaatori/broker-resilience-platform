@@ -3,7 +3,15 @@ name = "brp-agent"
 version = "0.1.0"
 description = "BRP 执行面 Agent（Python）：注册/心跳/领取/执行/回传（M2 起实现）"
 requires-python = ">=3.13"
-# 占位阶段零第三方依赖；FastAPI/httpx/pika/docker-py 随 M2 主循环引入并锁定
+# envmgr（第 17 天）引入 docker/pyyaml（实验环境拉起）；pika/httpx/fastapi 仍按计划 M2 主循环引入并锁定
+dependencies = [
+    "docker>=7,<8",
+    "pyyaml>=6,<7",
+]
+
+[tool.uv]
+# 纯依赖环境（非可安装包），uv run 免构建直接装依赖
+package = false
 
 [tool.ruff]
 line-length = 100
