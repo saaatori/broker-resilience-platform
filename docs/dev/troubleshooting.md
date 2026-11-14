@@ -108,3 +108,11 @@
 **原因**：TCP 拨号发生在**运行 go 进程的位置**。本机跑时 127.0.0.1=宿主机（PG 端口映射可达）；容器跑时 127.0.0.1=brp-go 容器自身（无任何监听端口）。同一地址、两种形态、两种结果。
 
 **解决（地址语义口径）**：compose 态下检测目标写 compose 网内服务名（如 `postgres:5432`，实测 reachable=true）或宿主机上进程用 `host.docker.internal`；`127.0.0.1` 仅本机进程开发态有效。将来真实被测 RabbitMQ 实例：LAN 上的写其 IP，实验容器组的写服务名。
+
+### 13. compose 缺 --env-file：空变量重建容器，go 进入 fail-fast 崩溃循环（2026-11-14，M0 验收日抓出）
+
+**现象**：`brp-go` 状态反复 Restarting（每分钟一次 Fatal：`config.yaml 缺少 auth.jwt_secret …`，RestartCount 上百），其余容器正常；`docker inspect` 见 `BRP_*` 环境变量全为空串，而 `deploy/env/.env` 里密钥明明齐全。
+
+**原因**：platform.yml 的变量全部来自 `--env-file deploy/env/.env`。不带该参数执行 `docker compose -f … up -d` 时，`${BRP_AUTH_JWT_SECRET}` 等解析为空串；与现有容器配置不同即触发**以空 env 重建**——go 的启动 fail-fast（空密钥拒绝启动）随即崩溃循环。Taskfile 的 `up` 任务此前一直缺该参数，是长期埋着的雷。
+
+**解决**：带 `--env-file deploy/env/.env` 重新 `up`（配置变化自动重建）；Taskfile 的 up/down 已补参数。手工执行 compose 同理必须带。防御启示：fail-fast 在此正是"哨兵"——崩溃循环看着吓人，但比空密钥静默上线好得多。
