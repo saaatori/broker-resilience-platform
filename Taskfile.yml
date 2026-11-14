@@ -20,14 +20,15 @@ tasks:
       - air -c .air.toml
 
   up:
-    desc: 启动平台基础设施（Compose：PG/Redis/Prometheus 等）
+    desc: 启动平台基础设施（Compose：PG/Redis/go/agent/frontend）
     cmds:
-      - docker compose -f deploy/compose/platform.yml up -d
+      # --env-file 必须带：缺了会用空变量重建容器（go 的 fail-fast 将崩溃循环）
+      - docker compose -f deploy/compose/platform.yml --env-file deploy/env/.env up -d
 
   down:
-    desc: 停止平台基础设施
+    desc: 停止平台基础设施（数据卷保留）
     cmds:
-      - docker compose -f deploy/compose/platform.yml down
+      - docker compose -f deploy/compose/platform.yml --env-file deploy/env/.env down
 
   test:
     desc: 运行全部单元测试
