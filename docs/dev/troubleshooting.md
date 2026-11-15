@@ -124,3 +124,11 @@
 **原因**：只渲染了 `lab-template.yml`，漏渲染 `deploy/lab/toxiproxy.json`（模板 proxy 服务挂载的就是它）——upstream 仍是 `brp_<TASK_ID>_broker` 占位符主机名，toxiproxy 解析不到上游主机，接受连接后即刻断开。
 
 **解决**：渲染必须双文件成套（yml + json 一并做占位符替换），并断言渲染产物无 `<TASK_ID>` 残留。已写入第 17 天 lab_factory 计划要点（评审建议 2）。
+
+### 15. Windows 同端口起第二个服务不报错，端口冲突冒烟脚本卡死（2026-11-15，M1 第 18 天）
+
+**现象**：为验证 recorder 端口占用失败路径，对已在监听的 :18081 再起一个实例——预期 bind 报错退出，实际第二实例正常运行（冒烟脚本阻塞在 serve_forever 直至超时）。
+
+**原因**：Python `http.server.HTTPServer` 默认 `allow_reuse_address = 1`（SO_REUSEADDR）。该选项在 Linux 语义是"允许复用 TIME_WAIT 地址"（占用中的端口仍 EADDRINUSE），而 **Windows 语义是允许与正在监听的套接字双绑定**——同端口双进程都能起来。
+
+**解决**：端口冲突（EADDRINUSE→fail-fast）路径的验证只能在 Linux/容器环境做；Windows 上写冒烟脚本凡起常驻服务必须后台化+显式 kill+超时兜底，不能假设"第二个起不来"。生产无影响（recorder 跑在 Linux 容器内，bind 冲突按预期走 `except OSError → exit 2`）。
