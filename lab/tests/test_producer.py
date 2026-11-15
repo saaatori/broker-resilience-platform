@@ -37,7 +37,7 @@ class FakeChannel:
             raise RuntimeError("nack simulated")
         self.published.append(
             {"exchange": exchange, "routing_key": routing_key, "body": body,
-             "properties": properties}
+             "properties": properties, "mandatory": mandatory}
         )
 
 
@@ -51,6 +51,7 @@ def test_publishes_unique_uuid4_double_written():
     for item in ch.published:
         assert item["exchange"] == ""
         assert item["routing_key"] == BUSINESS_QUEUE
+        assert item["mandatory"] is True  # 口径③：不可路由=失败，confirmed=路由+持久化 ack
         props_mid = item["properties"]["message_id"]
         payload_mid = json.loads(item["body"])["message_id"]
         assert props_mid == payload_mid  # 双写：单源同值（决策 5）
@@ -265,11 +266,11 @@ def test_count_and_rate_rejected_when_negative():
     assert exc_info.value.code == 2
 
 
-def test_make_poster_against_real_recorder_server(tmp_path):
-    """_make_poster 真实 urllib 路径 × day18 recorder 互通（评审 M-6）。"""
+def testmake_poster_against_real_recorder_server(tmp_path):
+    """make_poster 真实 urllib 路径 × day18 recorder 互通（评审 M-6）。"""
     import threading
 
-    from lab.helpers.producer import _make_poster
+    from lab.helpers.producer import make_poster
     from lab.helpers.recorder import Recorder, make_server
 
     rec = Recorder(tmp_path / "r.jsonl")
@@ -277,7 +278,7 @@ def test_make_poster_against_real_recorder_server(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        poster = _make_poster(base + "/records")
+        poster = make_poster(base + "/records")
 
         assert poster({"message_id": "m-1", "event": "SEND", "ts": "t1"}) is True
         assert poster({"message_id": "m-1", "event": "CONFIRM", "ts": "t2"}) is True
@@ -287,7 +288,7 @@ def test_make_poster_against_real_recorder_server(tmp_path):
         ]
         assert [line["event"] for line in lines] == ["SEND", "CONFIRM"]
 
-        assert _make_poster(base + "/nope")({"x": 1}) is False  # 404 → False
+        assert make_poster(base + "/nope")({"x": 1}) is False  # 404 → False
     finally:
         server.shutdown()
         server.server_close()

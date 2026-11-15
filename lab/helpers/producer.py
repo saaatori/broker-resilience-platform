@@ -43,8 +43,8 @@ class ProducerSummary:
     recorder_misses: int = 0
 
 
-def _make_poster(recorder_url: str):
-    """urllib POST 工厂：短超时（1s）防阻塞发布主线，失败返 False 由调用方计数。"""
+def make_poster(recorder_url: str):
+    """recorder POST 工厂（producer/consumer 共用）：短超时（1s）防阻塞主线，失败返 False。"""
 
     def post(event: dict) -> bool:
         try:
@@ -78,7 +78,7 @@ def run_producer(
     （单测用 dict 替身）；rate=0 表示不限速。
     """
     channel.confirm_delivery()
-    poster = post if post is not None else (_make_poster(recorder_url) if recorder_url else None)
+    poster = post if post is not None else (make_poster(recorder_url) if recorder_url else None)
     summary = ProducerSummary(sent=0, confirmed=0, failed=0)
     consecutive_misses = 0
     start = now_fn()
@@ -119,6 +119,7 @@ def run_producer(
                 routing_key=BUSINESS_QUEUE,
                 body=body,
                 properties=make_props(delivery_mode=2, message_id=mid),
+                mandatory=True,  # 口径③：不可路由=UnroutableError=计失败，confirmed=路由+持久化 ack
             )
             log.info("[%s] seq=%d id=%s", EVENT_CONFIRM, i, mid)
             post_event(mid, EVENT_CONFIRM)

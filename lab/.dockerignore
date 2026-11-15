@@ -1,0 +1,5 @@
+# 构建上下文只需运行时资产：helpers 与顶层文件（tests/缓存不进镜像）
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
