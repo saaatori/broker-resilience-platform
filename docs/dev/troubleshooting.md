@@ -132,3 +132,11 @@
 **原因**：Python `http.server.HTTPServer` 默认 `allow_reuse_address = 1`（SO_REUSEADDR）。该选项在 Linux 语义是"允许复用 TIME_WAIT 地址"（占用中的端口仍 EADDRINUSE），而 **Windows 语义是允许与正在监听的套接字双绑定**——同端口双进程都能起来。
 
 **解决**：端口冲突（EADDRINUSE→fail-fast）路径的验证只能在 Linux/容器环境做；Windows 上写冒烟脚本凡起常驻服务必须后台化+显式 kill+超时兜底，不能假设"第二个起不来"。生产无影响（recorder 跑在 Linux 容器内，bind 冲突按预期走 `except OSError → exit 2`）。
+
+### 16. .gitignore 行内注释不生效：/work/ 从未被忽略（2026-11-16，M1 第 21 天抓出）
+
+**现象**：`git status` 冒出 `?? work/`——`.gitignore` 里明明写着 `/work/`。
+
+**原因**：gitignore 的 `#` 只在**行首**（可有前导空格）才是注释起始；写在模式后面的 `#` 是模式的一部分。`/work/                  # Agent 执行工作目录…` 的实际模式是整行字符串，匹配任何路径都失败。该 bug 自仓库初建就在（day17 评审还"验证过 /work/ 覆盖"——当时目录恰好为空，掩盖了规则失效），直到 day21 网内验收残留文件落进 work/ 才暴露。
+
+**解决**：行内注释一律拆成独立注释行；修完用 `git check-ignore -v <路径>` 逐条实证（同批修复 backend/tmp/、params.json、data/ 四条）。教训：**gitignore 规则要 check-ignore 验证，不能目测**；"目录一直是空的"不是规则生效的证据。

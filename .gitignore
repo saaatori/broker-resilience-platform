@@ -1,5 +1,6 @@
 # ===== Go =====
-backend/tmp/            # air 热重载输出
+# backend/tmp/ 为 air 热重载输出
+backend/tmp/
 *.exe
 *.exe~
 *.test
@@ -21,9 +22,13 @@ venv/
 *.egg-info/
 
 # ===== 运行产物与数据 =====
-/work/                  # Agent 执行工作目录（params.json / JSONL / zip）
+# /work/ 为 Agent 执行工作目录（params.json / JSONL / zip）
+/work/
+# params.json 为场景手跑/runner 落盘的参数快照（/work/ 已覆盖生产位）
+params.json
 *.log
-data/                   # 本地数据卷
+# data/ 为本地数据卷
+data/
 *.jsonl
 *.zip
 
