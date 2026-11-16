@@ -177,6 +177,7 @@ def main(argv=None) -> int:
                 port=args.port,
                 virtual_host=args.vhost,
                 credentials=pika.PlainCredentials(args.user, args.password),
+                socket_timeout=30,  # day20 评审记档：DROP 黑洞下 basic_publish 不无限阻塞
             )
         )
 

@@ -18,7 +18,10 @@ import pytest
 
 DEFAULT_PARAMS_PATH = "params.json"
 RECORDER_PORT = 8080
-PROXY_AMQP_PORT = 5672  # up 代理（生产路径，§7）；down 路径直连留给需要它的场景
+PROXY_AMQP_PORT = 5672  # up 代理（生产路径，§7）
+PROXY_AMQP_PORT_DOWN = 5673  # down 代理（消费路径，§7）
+PROBE_PREFIX = "fixture-probe-"  # 烟雾/就绪探针前缀：计数契约一律排除（day21 I-1）
+DOCKER_CLIENT_TIMEOUT_S = 300  # exec 相邻输出间隔上限（评审 I-2：显式契约而非 docker-py 默认 60s）
 
 
 def load_params(path: Path | str) -> dict:
@@ -50,8 +53,12 @@ def amqp_parameters(
     user: str = "guest",
     password: str = "guest",
     vhost: str = "/",
+    socket_timeout: float = 10.0,
 ):
-    """经 Toxiproxy 的 AMQP 连接参数（pika 延迟导入，宿主单测不依赖 pika）。"""
+    """经 Toxiproxy 的 AMQP 连接参数（pika 延迟导入，宿主单测不依赖 pika）。
+
+    socket_timeout（day20 评审 I-3 兑现）：DROP 黑洞下 socket 读不再无限阻塞。
+    """
     import pika
 
     return pika.ConnectionParameters(
@@ -59,6 +66,7 @@ def amqp_parameters(
         port=port,
         virtual_host=vhost,
         credentials=pika.PlainCredentials(user, password),
+        socket_timeout=socket_timeout,
     )
 
 
@@ -92,9 +100,82 @@ def amqp_connection(task_id: str):
 
     若报连接失败且主机名形如 brp_<task_id>_proxy：进程不在实验网内——
     场景须在网内跑（见模块 docstring），不是网络故障。
+    **注意（day22 评审 I-1）**：fixture 参数在 setup 期即建连，不存在"惰性"——
+    长编排场景（exec 等待数十秒以上）勿把本 fixture 挂在测试签名上，闲置连接
+    会被 broker 心跳断连；需要时在断言处内联短开短关（复用 amqp_parameters）。
     """
     import pika
 
     connection = pika.BlockingConnection(amqp_parameters(f"brp_{task_id}_proxy"))
     yield connection
     connection.close()
+
+
+# ---------- 编排 fixture（M1 第 22 天）：网内 docker exec 实验容器 ----------
+# docker 惰性导入：宿主 lab/tests 套件零 docker 依赖；网内跑时容器已 pip install docker。
+
+
+@pytest.fixture(scope="session")
+def lab_containers(task_id: str):
+    """按角色取实验容器：lab_containers("producer") → brp_<task_id>_producer 容器对象。
+
+    超时契约（评审 I-2）：client timeout=DOCKER_CLIENT_TIMEOUT_S 是相邻输出的
+    间隔上限（流式 helper 持续输出不触发）；helper 静默挂死的总时长防护属
+    runner 总超时（§6），不在此层。
+    """
+    import docker
+
+    client = docker.from_env(timeout=DOCKER_CLIENT_TIMEOUT_S)
+
+    def get(role: str):
+        return client.containers.get(f"brp_{task_id}_{role}")
+
+    yield get
+    client.close()
+
+
+@pytest.fixture
+def run_helper(lab_containers):
+    """在实验容器内执行 helper CLI：run_helper(role, *args) -> (exit_code, output)。
+
+    参数走列表不经 shell；容器不存在时 docker.errors.NotFound 消息含容器名（fail-fast 可自诊）。
+    """
+    def _run(role: str, *args: str):
+        container = lab_containers(role)
+        result = container.exec_run(["python", f"/app/lab/helpers/{role}.py", *args])
+        return result.exit_code, result.output.decode("utf-8", "replace")
+
+    return _run
+
+
+@pytest.fixture
+def read_jsonl(lab_containers):
+    """读 recorder 卷上的 /data/records.jsonl（经容器内 python 输出），返回 list[dict]。"""
+
+    def _read() -> list:
+        container = lab_containers("recorder")
+        result = container.exec_run(
+            [
+                "python",
+                "-c",
+                "import pathlib, sys; p = pathlib.Path('/data/records.jsonl'); "
+                "sys.stdout.write(p.read_text(encoding='utf-8') if p.exists() else '')",
+            ]
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"read records.jsonl failed in recorder container: "
+                f"{result.output.decode('utf-8', 'replace')}"
+            )
+        text = result.output.decode("utf-8", "replace")
+        events = []
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                events.append(json.loads(line))
+            except ValueError:  # 坏行（崩溃尾巴）点名行号——与 recorder 重放同容错口径
+                raise RuntimeError(f"records.jsonl corrupt line {line_no}: {line[:100]!r}") from None
+        return events
+
+    return _read

@@ -126,6 +126,8 @@ def main(argv=None) -> int:
                 port=args.port,
                 virtual_host=args.vhost,
                 credentials=pika.PlainCredentials(args.user, args.password),
+                # 须 ≥ --idle-timeout-s（静默排空期不是 socket 故障）；黑洞防护同 producer
+                socket_timeout=max(60, args.idle_timeout_s + 30),
             )
         )
 

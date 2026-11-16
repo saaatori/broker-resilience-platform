@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from urllib.parse import urlparse
 
-PROBE_PREFIX = "fixture-probe-"
+from lab.conftest import PROBE_PREFIX
 
 
 def test_params_and_recorder_url_wired(params, task_id, recorder_url):
