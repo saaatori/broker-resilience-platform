@@ -1,1 +1,5 @@
 pika>=1.3,<2
+# 测试编排依赖（day23 起烘进镜像：pytest 跑编排/断言，docker 供 conftest exec）——
+# 镜像重建待容器出口网络恢复（day23 网络插曲，坑 #18）；重建前验收用宿主 uv --target 挂载法
+pytest>=8,<10
+docker>=7,<8

@@ -148,3 +148,11 @@
 **原因**：docker 对 `-v` 的宿主侧路径不存在时会**自动创建为目录**（挂载点语义）——本想挂单文件，漏了先生成文件的步骤，docker 就把该路径建成空目录挂进容器。
 
 **解决**：挂文件前确保宿主文件已存在（生成→ls 验证→再挂）；误建目录 `rm -rf` 清掉重建。脚本化挂载时把"文件存在性检查"放在 docker run 之前。
+
+### 18. 容器出口 TLS 全断而宿主机正常：DNS 通、握手后 UNEXPECTED_EOF（2026-11-17，M1 第 23 天）
+
+**现象**：容器内 `pip install` 对三个 pypi 镜像源全部 `SSLError: UNEXPECTED_EOF_WHILE_READING`；同刻宿主机 curl 同源 200（但慢至 10s）。容器 DNS 解析正常、TCP 可连。
+
+**原因**：容器出口的大包 TLS 流量被掐（典型为 MTU 分片丢弃或线路干扰；宿主路径与 docker NAT 路径受损程度不同）。Docker Desktop daemon 代理只作用于镜像拉取，**不覆盖容器内 egress**。
+
+**解决**：验收编排解围法（零容器网络）：宿主 `uv pip install --python 3.13 --target <dir> docker pytest`（uv 走宿主网络）→ `-v <dir>:/pylibs:ro -e PYTHONPATH=/repo:/pylibs` 挂进 pytest 容器 → `--entrypoint python … -m pytest`（pylibs 的 bin 不在 PATH，勿用 pytest 直做 entrypoint）。长期解：测试编排依赖烘进 brp-lab:dev 镜像（已列 lab/requirements.txt，重建待网络恢复）。教训：**验收链路里凡"容器内临时 pip install"都是单点网络依赖**，要么烘焙要么挂载。

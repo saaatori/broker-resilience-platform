@@ -12,15 +12,19 @@ network-connect 到任务网）；M1 手跑等价形态=网内容器跑 pytest�
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
+
+# 引导：lab.helpers.* 需要 lab 包的父目录在 sys.path（宿主=仓库根；网内=/repo 挂载根）。
+# 保障=祖先 conftest 先于场景测试模块加载（收口时引入，day23 评审确认语义）。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 DEFAULT_PARAMS_PATH = "params.json"
 RECORDER_PORT = 8080
 PROXY_AMQP_PORT = 5672  # up 代理（生产路径，§7）
 PROXY_AMQP_PORT_DOWN = 5673  # down 代理（消费路径，§7）
-PROBE_PREFIX = "fixture-probe-"  # 烟雾/就绪探针前缀：计数契约一律排除（day21 I-1）
 DOCKER_CLIENT_TIMEOUT_S = 300  # exec 相邻输出间隔上限（评审 I-2：显式契约而非 docker-py 默认 60s）
 
 

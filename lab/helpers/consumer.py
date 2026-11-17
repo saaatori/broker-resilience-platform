@@ -26,13 +26,9 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from lab.helpers.events import EVENT_ACKED, EVENT_DELIVERED, EVENT_PROCESSED
 from lab.helpers.producer import make_poster
 from lab.helpers.setup_broker import BUSINESS_QUEUE, connect_with_retry
-
-# 事件词汇契约（第 22/23 天场景与 counter 共用，勿改名）：
-EVENT_DELIVERED = "DELIVERED"
-EVENT_PROCESSED = "PROCESSED"
-EVENT_ACKED = "ACKED"
 
 log = logging.getLogger("brp-consumer")
 

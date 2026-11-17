@@ -24,11 +24,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from lab.helpers.events import EVENT_CONFIRM, EVENT_SEND
 from lab.helpers.setup_broker import BUSINESS_QUEUE, connect_with_retry
-
-# 事件词汇契约（第 20/22/23 天 consumer/场景/counter 共用，勿改名）：
-EVENT_SEND = "SEND"
-EVENT_CONFIRM = "CONFIRM"
 
 log = logging.getLogger("brp-producer")
 

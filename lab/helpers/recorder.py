@@ -22,10 +22,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# 事件词汇契约（第 20 天 consumer 上报 / 第 23 天 counter 计数共用，勿改名）：
-# 目前 recorder 只对 PROCESSED 参与去重；DUP_BUSINESS 为本服务派生事件。
-PROCESSED = "PROCESSED"
-DUP_BUSINESS = "DUP_BUSINESS"
+from lab.helpers.events import EVENT_DUP_BUSINESS as DUP_BUSINESS
+from lab.helpers.events import EVENT_PROCESSED as PROCESSED
 
 log = logging.getLogger("brp-recorder")
 

@@ -1,9 +1,8 @@
 """场景①正常投递（M1 第 22 天，实施规划 §5/§6）：发 N 条 → 消费 → 阶段计数断言。
 
 编排：网内 docker exec producer/consumer 容器（conftest run_helper）；
-断言链：CLI summary → JSONL 五阶段计数（排除 fixture-probe- 前缀，day21 契约）
-→ 队列被动声明清零。纯函数（parse_summary/count_stages）宿主单测覆盖；
-count_stages 是 day23 counter.py 正式化前的场景轻量版。
+断言链：CLI summary → JSONL 五阶段计数（agent.reconcile.counter，day23 收口）
+→ 队列被动声明清零。parse_summary 纯函数宿主单测覆盖。
 """
 
 from __future__ import annotations
@@ -12,25 +11,17 @@ import json
 import re
 import urllib.request
 import uuid
-from collections import Counter, defaultdict
 
 import pytest
 
+from agent.reconcile.counter import count_stages  # day23 收口：吸收本模块原实现
 from lab.conftest import (
-    PROBE_PREFIX,
     PROXY_AMQP_PORT,
     PROXY_AMQP_PORT_DOWN,
     amqp_parameters,
 )
-from lab.helpers.consumer import (
-    EVENT_ACKED,
-    EVENT_DELIVERED,
-    EVENT_PROCESSED,
-)
-from lab.helpers.producer import EVENT_CONFIRM, EVENT_SEND
+from lab.helpers.events import EVENT_DELIVERED, PROBE_PREFIX
 from lab.helpers.setup_broker import BUSINESS_QUEUE
-
-ALL_FIVE_EVENTS = (EVENT_SEND, EVENT_CONFIRM, EVENT_DELIVERED, EVENT_PROCESSED, EVENT_ACKED)
 
 SUMMARY_MARKER = "summary:"
 
@@ -81,11 +72,39 @@ def test_normal_delivery_end_to_end(params, task_id, recorder_url, run_helper, r
     )
     assert consumer["acked"] == n and consumer["requeued"] == 0 and consumer["stopped"] == "max"
 
-    # ④ JSONL 五阶段计数（排除探针前缀；每 id 恰五事件；无重复业务副作用）
-    result = count_stages(read_jsonl())
-    assert result["counts"] == {event: n for event in ALL_FIVE_EVENTS}
-    assert result["total_ids"] == n
-    assert result["incomplete_ids"] == []
+    # ④ JSONL 五阶段计数（day23 counter）：双面断言——
+    # 权威面（喂 summary）：六计数与 CLI 一致；证据面（不喂 summary）：钉"记录链路忠实"
+    # （day23 评审 I-1：仅喂 summary 抓不住 recorder 静默丢整消息行/多余非 PROCESSED 行）
+    events = read_jsonl()
+    result = count_stages(events, producer_summary=producer, consumer_summary=consumer)
+    assert (
+        result["sent"],
+        result["confirmed"],
+        result["delivered"],
+        result["processed_unique"],
+        result["acked"],
+    ) == (n, n, n, n, n)
+    assert result["dup_business"] == 0 and result["dup_business_ids"] == []
+
+    evidence = count_stages(events)  # 证据面：纯 JSONL 计数
+    assert (
+        evidence["sent"],
+        evidence["confirmed"],
+        evidence["delivered"],
+        evidence["processed_unique"],
+        evidence["acked"],
+    ) == (n, n, n, n, n)
+    assert evidence["dup_business"] == 0
+    for diff_key in (
+        "sent_not_confirmed",
+        "confirmed_not_delivered",
+        "delivered_not_processed",
+        "processed_not_acked",
+    ):
+        assert result[diff_key] == [] and evidence[diff_key] == []
+    # 总行数锚定：恰 5n + 探针行（探针数按前缀自数——网内同目录跑 test_fixtures 会多 1 行）
+    probe_count = sum(1 for e in events if e["message_id"].startswith(PROBE_PREFIX))
+    assert evidence["total_events"] == 5 * n + probe_count
 
     # ⑤ 队列清零（评审 I-1：内联短开短关——编排期间不持有连接，防 pika 心跳断连）
     import pika
@@ -111,21 +130,3 @@ def parse_summary(output: str, required: tuple[str, ...] = ("sent", "confirmed",
     if missing:
         raise ValueError(f"summary missing field(s): {', '.join(missing)}")
     return {k: int(v) if v.lstrip("-").isdigit() else v for k, v in pairs.items()}
-
-
-def count_stages(events: list[dict], exclude_prefix: str = PROBE_PREFIX) -> dict:
-    """五阶段计数（场景轻量版）：排除探针前缀行，点名事件不完整的 message_id。
-
-    day21 契约：fixture-probe-* 行是烟雾探针写入共享卷的，计数一律排除。
-    **口径注意（day23 counter 吸收时）**：counts 为逐行口径（重复行计入——本场景
-    借此承担 dup 检测）；day23 counter 的阶段计数须另取 unique(message_id, event)
-    口径，DUP_BUSINESS 单列，勿直接搬走 counts。
-    """
-    real = [e for e in events if not e["message_id"].startswith(exclude_prefix)]
-    counts = Counter(e["event"] for e in real)
-    by_id: dict[str, set[str]] = defaultdict(set)
-    for event in real:
-        by_id[event["message_id"]].add(event["event"])
-    expected = set(ALL_FIVE_EVENTS)
-    incomplete = sorted(mid for mid, seen in by_id.items() if seen != expected)
-    return {"counts": dict(counts), "total_ids": len(by_id), "incomplete_ids": incomplete}
