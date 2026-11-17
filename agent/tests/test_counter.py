@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from agent.reconcile.counter import count_stages
 from lab.helpers.events import (
     EVENT_ACKED,
