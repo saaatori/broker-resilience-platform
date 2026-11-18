@@ -2,7 +2,8 @@
 
 编排：网内 docker exec producer/consumer 容器（conftest run_helper）；
 断言链：CLI summary → JSONL 五阶段计数（agent.reconcile.counter，day23 收口）
-→ 队列被动声明清零。parse_summary 纯函数宿主单测覆盖。
+→ 指标计算与 verdict 断言（agent.reconcile.metrics，day25 全链）
+→ 队列被动声明清零。parse_summary/resolve_assertions 纯函数宿主单测覆盖。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import uuid
 import pytest
 
 from agent.reconcile.counter import count_stages  # day23 收口：吸收本模块原实现
+from agent.reconcile.metrics import compute_metrics, evaluate_assertions
 from lab.conftest import (
     PROXY_AMQP_PORT,
     PROXY_AMQP_PORT_DOWN,
@@ -24,6 +26,13 @@ from lab.helpers.events import EVENT_DELIVERED, PROBE_PREFIX
 from lab.helpers.setup_broker import BUSINESS_QUEUE
 
 SUMMARY_MARKER = "summary:"
+
+# 场景默认断言集（day25 万条验收口径）：params["assertions"] 可覆盖（schema=day24 契约）
+DEFAULT_SCENARIO_ASSERTIONS = (
+    {"metric": "processed_rate", "op": ">=", "value": 1.0},
+    {"metric": "dup_rate", "op": "<=", "value": 0.0},
+    {"metric": "loss_rate", "op": "<=", "value": 0.0},
+)
 
 
 def test_normal_delivery_end_to_end(params, task_id, recorder_url, run_helper, read_jsonl):
@@ -106,6 +115,11 @@ def test_normal_delivery_end_to_end(params, task_id, recorder_url, run_helper, r
     probe_count = sum(1 for e in events if e["message_id"].startswith(PROBE_PREFIX))
     assert evidence["total_events"] == 5 * n + probe_count
 
+    # ④.5 指标与断言（day25 万条验收全链消费：metrics 吃权威面 counts + 全量 events）
+    metrics = compute_metrics(result, events=events)
+    verdict = evaluate_assertions(metrics, resolve_assertions(params))
+    assert verdict["verdict"] == "PASS", f"verdict details: {verdict['details']}"
+
     # ⑤ 队列清零（评审 I-1：内联短开短关——编排期间不持有连接，防 pika 心跳断连）
     import pika
 
@@ -130,3 +144,13 @@ def parse_summary(output: str, required: tuple[str, ...] = ("sent", "confirmed",
     if missing:
         raise ValueError(f"summary missing field(s): {', '.join(missing)}")
     return {k: int(v) if v.lstrip("-").isdigit() else v for k, v in pairs.items()}
+
+
+def resolve_assertions(params: dict) -> list[dict]:
+    """断言集解析：缺省/None → 场景默认集；**显式空列表 → 保留**（day25 评审 I-1）。
+
+    空集是合法显式输入（"无断言"），与 evaluate_assertions 的 vacuous-PASS 契约一致；
+    用 `or` 回落会吞掉空列表造成配置快照与执行事实背离。day31 schema 冻结前此语义不变。
+    """
+    assertions = params.get("assertions")
+    return list(DEFAULT_SCENARIO_ASSERTIONS) if assertions is None else assertions
