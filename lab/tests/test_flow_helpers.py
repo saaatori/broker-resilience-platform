@@ -79,3 +79,25 @@ def test_resolve_assertions_four_paths():
     # 显式列表 → 直通不改
     custom = [{"metric": "dup_rate", "op": "<=", "value": 0.01}]
     assert resolve_assertions({"assertions": custom}) is custom
+
+
+def test_params_default_file_shape_and_assertions_match_code():
+    """day26 评审 I-2 防漂移钉子：默认快照形状 + assertions 与代码默认集深相等。
+
+    params.default.json 是 day31 test_scenario.default_params 的 seed——形状在此冻结。
+    """
+    import json
+    from pathlib import Path
+
+    default_path = (
+        Path(__file__).resolve().parents[1] / "scenarios" / "normal_delivery" / "params.default.json"
+    )
+    data = json.loads(default_path.read_text(encoding="utf-8"))
+
+    # 形状：三正数参数 + 断言恰三条；task_id/execution_id 不进默认文件（runner 注入契约）
+    assert data["message_count"] > 0 and data["publish_rate"] > 0 and data["idle_timeout_s"] > 0
+    assert len(data["assertions"]) == 3
+    assert "task_id" not in data and "execution_id" not in data
+
+    # 双源防漂移：文件断言与代码默认集深相等
+    assert data["assertions"] == [dict(a) for a in DEFAULT_SCENARIO_ASSERTIONS]

@@ -156,3 +156,11 @@
 **原因**：容器出口的大包 TLS 流量被掐（典型为 MTU 分片丢弃或线路干扰；宿主路径与 docker NAT 路径受损程度不同）。Docker Desktop daemon 代理只作用于镜像拉取，**不覆盖容器内 egress**。
 
 **解决**：验收编排解围法（零容器网络）：宿主 `uv pip install --python 3.13 --target <dir> docker pytest`（uv 走宿主网络）→ `-v <dir>:/pylibs:ro -e PYTHONPATH=/repo:/pylibs` 挂进 pytest 容器 → `--entrypoint python … -m pytest`（pylibs 的 bin 不在 PATH，勿用 pytest 直做 entrypoint）。长期解：测试编排依赖烘进 brp-lab:dev 镜像（已列 lab/requirements.txt，重建待网络恢复）。教训：**验收链路里凡"容器内临时 pip install"都是单点网络依赖**，要么烘焙要么挂载。
+
+### 19. Windows 下 bash 的 /tmp 与原生 Python 的 /tmp 不是同一个地方（2026-11-18，M1 第 26 天）
+
+**现象**：Git Bash 里 `python -c "open('/tmp/x','w')"` 写文件后，`docker run -v "C:/Users/<u>/AppData/Local/Temp/x:…"` 挂载说文件不存在——docker 把挂载点建成目录（#17 连锁），pytest 全员 ERROR；同脚本的 bash `printf > /tmp/x` 却一直好使。
+
+**原因**：Git Bash（MSYS）把 `/tmp` 映射到 `C:\Users\<u>\AppData\Local\Temp`，但**原生 Windows Python 不经 MSYS**——`open('/tmp/x')` 相对当前盘符解析为 `F:\tmp\x`（本仓库在 F: 盘）。同一个 `/tmp` 字面量两个世界。
+
+**解决**：跨 bash/Python 的临时文件一律让 Python 用 `os.environ['TEMP']` 定位（或写死 `C:/Users/<u>/AppData/Local/Temp`），勿在 Python 里写 `/tmp/...`；顺带两条循环纪律：`cmd | tail` 后 `$?` 是 tail 的退出码（取真实 rc 用输出落文件或 `PIPESTATUS[0]`）；挂载前 `ls -la | grep "^-"` 预检文件真的是文件。

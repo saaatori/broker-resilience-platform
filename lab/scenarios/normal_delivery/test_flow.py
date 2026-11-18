@@ -68,11 +68,13 @@ def test_normal_delivery_end_to_end(params, task_id, recorder_url, run_helper, r
     assert producer["sent"] == n and producer["confirmed"] == n and producer["failed"] == 0
     assert producer["recorder_misses"] == 0  # 评审 M-5：区分"消息丢失"与"记录器丢事件"
 
-    # ③ consumer 主通道 max_messages=N（day20 评审 rec），经 down 代理
+    # ③ consumer 主通道 max_messages=N（day20 评审 rec），经 down 代理；
+    # idle 兜底超时参数化（day26 定稿默认 30，params.idle_timeout_s 可覆盖）
+    idle_timeout_s = params.get("idle_timeout_s", 30)
     code, output = run_helper(
         "consumer",
         "--host", f"brp_{task_id}_proxy", "--port", str(PROXY_AMQP_PORT_DOWN),
-        "--max-messages", str(n), "--idle-timeout-s", "30",
+        "--max-messages", str(n), "--idle-timeout-s", str(idle_timeout_s),
         "--recorder-url", recorder_url,
     )
     assert code == 0, output[-2000:]

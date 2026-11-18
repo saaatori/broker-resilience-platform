@@ -1,0 +1,10 @@
+{
+  "message_count": 10000,
+  "publish_rate": 500,
+  "idle_timeout_s": 30,
+  "assertions": [
+    {"metric": "processed_rate", "op": ">=", "value": 1.0},
+    {"metric": "dup_rate", "op": "<=", "value": 0.0},
+    {"metric": "loss_rate", "op": "<=", "value": 0.0}
+  ]
+}
