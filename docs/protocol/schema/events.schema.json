@@ -10,7 +10,7 @@
         "seq": {
           "type": "integer",
           "minimum": 0,
-          "description": "幂等键 (eid, seq) 的序号，执行内单调递增"
+          "description": "幂等键 (eid, seq) 的序号，执行内严格递增不得重复（v1.0.4）"
         },
         "ts": {
           "type": "string",

@@ -158,6 +158,27 @@ def test_params_sample_matches_default_params():
         assert sample[key] == default[key]
 
 
+def test_params_json_composition_roundtrip():
+    """day29 评审 I-3/Rec 2：claim envelope → Agent 落盘合成式（协议 §2.3 v1.0.4⑤）
+    → params.json 过 schema——钉 task_id 字符串口径与合成产物形态。"""
+    claim_response = {
+        "task_id": "42",  # v1.0.5：DB bigint 的十进制字符串
+        "execution_id": "0f0e0d0c-baad-1dea-dead-beef00000042",
+        "attempt": 1,
+        "scenario_key": "normal_delivery",
+        "params_snapshot": {
+            "message_count": 10000, "publish_rate": 500, "idle_timeout_s": 30,
+            "assertions": [{"metric": "processed_rate", "op": ">=", "value": 1.0}],
+        },
+    }
+    params_json = {
+        **claim_response["params_snapshot"],
+        "task_id": claim_response["task_id"],
+        "execution_id": claim_response["execution_id"],
+    }
+    assert validate(load("params_snapshot"), params_json) == []
+
+
 def test_result_schema_pinned_to_counter_metrics_roundtrip():
     """round-trip 防漂移钉子（day28 评审 I-2）：counter/metrics/evaluate 的真实输出
     直接合成 result 文档过 schema——实现改键名/schema 漂移，任一即红。"""

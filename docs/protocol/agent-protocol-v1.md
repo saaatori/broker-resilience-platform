@@ -32,15 +32,17 @@
 - 响应 200：`{"lease_ok": [execution_id, ...], "cancel_requested": [execution_id, ...]}`
 - 语义：Go 刷新租约；`lease_ok` 为仍被认可的执行；`cancel_requested` 为要求中止的执行，Agent 须中止并走恢复清理后 cleanup-ack。
 - **差集语义（v1.0.1 定）**：Agent 上报的 `running_executions` 中，**既不在 `lease_ok` 也不在 `cancel_requested` 的执行 = 视同 410**（Go 侧已判 FAILED 等），Agent 按 §3 处置（中止+恢复清理+cleanup-ack）。410 由 **claim 与 heartbeat** 返回（Agent 级）；执行级失效经本差集传达。
+- **`lease_ok` 判定规则（v1.0.4 定；v1.0.5 补分支序）**：对上报的每个 eid——**租约失效者一律不入两数组（含 CANCELLING，v1.0.5）**；其余按序：执行存在、归属本 Agent、非终态、租约未过期 → 计入 `lease_ok`；任务处于 CANCELLING → 计入 `cancel_requested`（互斥，取消优先）；其余（不存在/他 Agent/终态）→ 两数组皆不入（落入差集语义）。
 
 ### 2.3 `POST /agent/tasks/claim`
 
 原子领取一个待执行任务。
 
 - 请求：`{"agent_id": str}`
-- 响应 200：`{"task_id": int, "execution_id": str(uuid), "attempt": int, "scenario_key": str, "params_snapshot": object}`
+- 响应 200：`{"task_id": str, "execution_id": str(uuid), "attempt": int, "scenario_key": str, "params_snapshot": object}`——`task_id` 为**数据库 bigint id 的十进制字符串形式**（v1.0.5 统一口径：与 schema/conftest/容器名的 string 形态一致；M1 手跑的语义化 id 如 "w6accept" 同为合法值）。
 - 响应 204：无任务（Agent 继续轮询，默认间隔 5s）。
 - 语义：`SELECT … FOR UPDATE SKIP LOCKED` 一次领一个；领取即创建 `test_execution(attempt)` 并写入租约。并发下同任务只有一个领取成功——**SKIP LOCKED 正常路径的失败方收到 204**；**409 为防御性保留**（唯一约束/状态机拒绝等异常路径），处置同为退避重试（v1.0.1 注）。
+- **Agent 落盘合成式（v1.0.4 定）**：Agent 将 `params.json` = claim 响应的 `params_snapshot` + 响应顶层 `task_id`/`execution_id` 写至 `/work/<execution_id>/params.json`（conftest 消费面；与 §6.1 合成规则衔接）。
 
 ### 2.4 `POST /executions/{eid}/events`
 
@@ -48,6 +50,9 @@
 
 - 请求：`{"seq": int, "ts": str(ISO 8601), "type": "STATUS" | "LOG" | "PROGRESS", "payload": object}`
 - 响应：**202 Accepted**；幂等键 `(eid, seq)`（重复 seq 静默去重）。
+- **seq 发端行为（v1.0.4 定）**：执行内**严格递增、不得重复**（起点不限，样例从 0 起）；重复由幂等去重吸收。
+- **乱序语义（v1.0.4 定）**：按到达顺序接受并 SSE 转发，**不重排**；需要顺序的消费者按 seq 自行重排。
+- **存储语义（v1.0.4 定，架构护栏；v1.0.5 补有界性与降级）**：events **不入 PG**（决策 6 的"事件不逐行入库"同样适用于本端点）——幂等去重走 **Redis SETNX**（TTL 10 分钟，总体设计表 26 键 `exec:evt:{eid}:{seq}`），SSE 即时转发不持久化。**去重窗口=TTL 10 分钟（有界）**：窗口外的迟到重传可能再次转发——消费者按 seq **重排并去重**（v1.0.5）；Redis 不可用时 SETNX 失败=返回 5xx（Agent 退避重试，不做降级放行，保去重语义强）。**SSE 断线不回放**：事件无持久化源，重连后进度以任务状态查询兜底（M-3 成文，M4 前端注意）。
 - **ts 口径（v1.0.1 定，决策 11）**：ts = **事件发生时刻**（非上报时刻），UTC ISO 8601 **带时区后缀**。
 - **STATUS 触发语义（v1.0.1 定）**：`DISPATCHED → RUNNING` 由该执行的**首条 `type=STATUS` 事件触发**（不论子状态取值）；STATUS 的 payload 含子状态（载荷键名 **`substate`**，取值集=§5 序列——**v1.0.2 已固化**）。
 - **payload 三型（v1.0.2 固化，schema 为权威；v1.0.3 起 type 与 payload 形状在 schema 中绑定——错配即拒收）**：STATUS `{substate}`；LOG `{message}`；PROGRESS `{label?, current, total}`——详见 `docs/protocol/schema/events.schema.json`（顶层 oneOf 三完整分支，各含 type const）。
@@ -69,6 +74,7 @@
 - 请求：`{"cleaned": bool, "leftovers": [str, ...]}`
 - 响应 **200**（v1.0.1 定）。
 - 语义：Agent 报告实验环境清理结果；`leftovers` 非空时 Go 侧记入清理任务队列兜底。
+- **非取消态语义（v1.0.4 定）**：cleanup-ack 仅在 CANCELLING 有状态转移语义；其余任何状态（含 RUNNING/DISPATCHED 与终态）收到 = 记录、返回 200、**不改状态**。
 - **时序（v1.0.1 定，见 §4 取消闭环时序）**：取消/失联路径 = 先 cleanup-ack（触发状态转移）后 result；cleanup-ack 失败可重试（幂等）。
 
 ## 3. 错误约定
@@ -78,6 +84,8 @@
 | 401 | token 无效 | 重新走 register 换取新 token（同 hostname 复用 agent_id） |
 | 409 | 领取冲突（防御性保留，正常路径失败方收 204） | 退避后重试轮询 claim（上限 30s） |
 | 410 | 租约失效（由 claim/heartbeat 返回，Agent 级；执行级经 lease_ok 差集） | **必须中止当前执行**并走恢复清理（recover+cleanup），随后 cleanup-ack；破坏性任务不自动重跑 |
+
+**执行归属（v1.0.5）**：`/executions/{eid}` 三端点（events/result/cleanup-ack）限**本 Agent 名下**的执行——非本 Agent 的 eid 视同不存在（404）。
 
 ## 4. 任务状态机（Go 侧）
 
@@ -94,6 +102,8 @@
 | RUNNING | 用户取消 | CANCELLING | 取消指令经心跳响应下发 |
 | CANCELLING | 收到 cleanup-ack | CANCELLED | SSE 广播取消完成 |
 | CANCELLING | 收到 result(CANCELLED)（尚未 cleanup-ack 时）※ | CANCELLED | 视同 cleanup-ack 转移（防卡死双保险，清理仍会执行） |
+| DISPATCHED | 收到 result(COMPLETED/FAILED)※※ | COMPLETED/FAILED | v1.0.4 扩展：Agent 在首条 STATUS 前崩溃恢复后直接回传的场景；动作同 RUNNING 对应行 |
+| CANCELLING | 收到 result(COMPLETED/FAILED)※※ | CANCELLED | v1.0.4 扩展：取消意图优先——result 照录但不改变取消终态；清理照常兜底 |
 | DISPATCHED / RUNNING / CANCELLING ※ | 租约过期（45s 无心跳） | FAILED | 标记 lease_lost；破坏性任务不自动重跑，仅排队清理任务 |
 
 **取消闭环时序（v1.0.1 定，C-1）**——两个实现者的唯一读法：
@@ -105,6 +115,12 @@ cancel_requested（心跳响应下发）
   → cleanup-ack                    ← 触发 CANCELLING → CANCELLED（正常路径）
   → result(CANCELLED)              ← 幂等落库，不改状态（迟到/重复同样 200）
 ```
+
+**用户取消入口 × 各状态（v1.0.5 定，I-2——取消 REST 是前端→Go，不在 6 个 Agent 端点内）**：PENDING 取消 = 直接置 CANCELLED（无执行清理负担）；DISPATCHED 取消 = 置取消标志（Redis `exec:cancel:{eid}`），**首条 STATUS 事件到达即转 CANCELLING**，随心跳下发 cancel_requested 走闭环（Agent 失联则清扫兜底）；RUNNING 起按表行 5。前端取消按钮无需按状态禁用。
+
+**result(CANCELLED) 于非取消态（v1.0.5 定，I-1）**：Agent 自行中止（无用户取消）在 DISPATCHED/RUNNING 态回传 result(CANCELLED) = **照录不改态**，由租约清扫收口为 FAILED(lease_lost)——失败归因保持"失联/中止"，不与用户取消混淆。
+
+**CANCELLING 收 result(COMPLETED/FAILED) 的照录细则（v1.0.5 定，I-4）**：test_result 保留**原 status**（COMPLETED/FAILED 照录）；报告与 artifacts 登记照 RUNNING 完成路径执行；幂等 **first-wins**（`uq(execution_id)` 冲突即忽略后续——含闭环尾随的 result(CANCELLED)）。
 
 **终态兜底规则（v1.0.1 定）**：终态（COMPLETED/FAILED/CANCELLED）后收到 events / result / cleanup-ack：一律记录、返回 2xx、**不改状态**；CANCELLING 态收到 result(CANCELLED) 视同 cleanup-ack 转移（上表 ※ 行）——两条兜底保证任何消息乱序/重试下无卡死路径。
 
@@ -151,3 +167,5 @@ cancel_requested（心跳响应下发）
 - **v1.0.1（2026-11-19，冻结评审补丁）**：wire 要素补全（评审 1C/7I/6M 处置）。①**取消闭环时序成文**（cleanup-ack 先于 result；CANCELLING 收 result(CANCELLED) 视同转移 ※ 行；终态兜底=记录+2xx+不改状态）；②CANCELLING 并入租约过期转移（→FAILED(lease_lost)）；③result/cleanup-ack 补响应 200；④lease_ok 差集=视同 410 + 410 端点归属（claim/heartbeat，Agent 级；执行级走差集）；⑤DISPATCHED→RUNNING=首条 STATUS 事件触发（不论子状态）+ 子状态取值集钉死；⑥artifacts=归档卷相对路径+共享归档卷部署前提（决策 6）；⑦events.ts=事件发生时刻 UTC 带时区（决策 11）；⑧错误码兜底（其余 4xx 不重试/5xx 退避）+ Agent 轮询默认值（claim 5s/409 上限 30s）；⑨register 幂等（同 hostname 复用 agent_id 换 token）；⑩409 防御性保留注 + SKIP LOCKED 正常路径 204；⑪fault 措辞=正常场景无键。
 - **v1.0.2（2026-11-19，schema 固化）**：JSON Schema 三件入库 `docs/protocol/schema/`（params_snapshot/events/result + samples 三件 + 校验测试入 agent 套件）：①events payload 三型定义（STATUS `{substate}` / LOG `{message}` / PROGRESS `{label?, current, total}`，oneOf 互斥）——子状态载荷键名固化 `substate`；②result 的 summary/reconciliation 键集固化（=counter/metrics 实现 dict 键）；③params 结构固化（注入键=可选属性，两形态共用 schema）。schema 为上述细化项的**权威**，本文档指向之。
 - **v1.0.3（2026-11-19，schema 评审补丁）**：①events schema 改**顶层 oneOf 三完整分支**（type const 绑定 payload 形状）——修复 v1.0.2 的 type↔payload 错配放行（评审实测 LOG+substate/STATUS+message 均曾通过）；②result.details.actual 收窄为 number|null（无 string 生产者）；③details.metric 收紧为五值枚举（与断言侧对称）；④samples 补 LOG/PROGRESS 两件；⑤**语法口径**：三件 schema 为 draft-07 与 2020-12 公共子集（无 $defs/$ref/prefixItems 等独有关键字）——Go 侧库选型不受 draft 限制。
+- **v1.0.4（2026-11-19，双视角走查修订）**：Go/Agent 双实现者 dry-run 走查出的八项歧义收口：①状态机扩展两行【※※】——DISPATCHED 收 result（Agent 首条 STATUS 前崩溃恢复场景）与 CANCELLING 收 result(COMPLETED/FAILED)（取消意图优先，result 照录不改终态）；②events seq 发端=严格递增不得重复；③events 乱序=接受并转发不重排（消费者按 seq 自行重排）；④events **存储语义护栏**：不入 PG（决策 6 同样适用本端点），幂等去重=Redis SETNX（表 26 键 `exec:evt:{eid}:{seq}`，TTL 10min），SSE 即时转发不持久化；⑤claim 的 **Agent 落盘合成式**成文（params.json = snapshot + 响应顶层 task_id/execution_id → /work/<eid>/）；⑥heartbeat **lease_ok 判定规则**成文（存在/归属/非终态/租约有效；CANCELLING→cancel_requested 互斥取消优先）；⑦cleanup-ack **非取消态语义**（仅 CANCELLING 有转移，其余记录不改态）。走查表见开发日志第 29 天。
+- **v1.0.5（2026-11-19，走查评审补丁——第三实现者沿 status 维度与取消触发面重走）**：①**用户取消 × 各状态**成文（PENDING=直接 CANCELLED；DISPATCHED=置标志+首条 STATUS 转 CANCELLING；取消入口在前端→Go，v1.0.4 双视角的结构性盲区）；②result(CANCELLED) 于非取消态=照录不改态、清扫收口（失败归因不混淆）；③CANCELLING 收 result(COMPLETED/FAILED) 照录细则（保留原 status/报告照常/幂等 first-wins）；④task_id 类型统一为 **str**（DB bigint 的字符串化——消除协议 int 与 schema string 的字段级矛盾）；⑤lease_ok 分支序补"租约失效一律不入两数组（含 CANCELLING）"；⑥events 去重窗口有界性（TTL 10min，窗口外重复可能重发；消费者按 seq 重排**并去重**）+ Redis 不可用=5xx 不降级 + **SSE 断线不回放**（任务状态查询兜底）；⑦三 `/executions/*` 端点限本 Agent 名下执行（否则 404）。**走查表↔本日志编号映射**：v1.0.4 日志①=走查卡壳⑥⑦（两行）、②=卡壳③、③=卡壳②、④=卡壳⑧、⑤=卡壳④、⑥=卡壳⑤、⑦=卡壳⑦。
