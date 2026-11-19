@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brp.protocol.params_snapshot.v1",
+  "title": "params_snapshot（协议 §6.1；claim 响应与 params.json 文件共用形态）",
+  "type": "object",
+  "properties": {
+    "instance_ref": {
+      "type": "string",
+      "description": "被测实例引用（M2 建任务时注入）"
+    },
+    "task_id": {
+      "type": "string",
+      "description": "运行期注入键（params.json 文件形态；claim 响应无）"
+    },
+    "execution_id": {
+      "type": "string",
+      "description": "运行期注入键（同上）"
+    },
+    "message_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "publish_rate": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "msg/s，0=不限速"
+    },
+    "fault": {
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "type": "string"
+        },
+        "inject_at_s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_s": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "strategy",
+        "inject_at_s",
+        "duration_s"
+      ],
+      "additionalProperties": false,
+      "description": "M3 故障场景启用；正常场景无 fault 键"
+    },
+    "observe_window_s": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "M3 定稿"
+    },
+    "recovery_timeout_s": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "M3 定稿"
+    },
+    "idle_timeout_s": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "consumer 排空兜底超时（day26 定稿，默认 30）"
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "enum": [
+              "processed_rate",
+              "dup_rate",
+              "loss_rate",
+              "avg_delivery_latency_s",
+              "recovery_time_s"
+            ]
+          },
+          "op": {
+            "enum": [
+              "==",
+              ">=",
+              "<=",
+              ">",
+              "<"
+            ]
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "metric",
+          "op",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "description": "断言列表（day24 契约；空列表=无断言 vacuous PASS）"
+    }
+  },
+  "required": [
+    "message_count",
+    "publish_rate",
+    "idle_timeout_s",
+    "assertions"
+  ],
+  "additionalProperties": false
+}

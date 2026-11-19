@@ -1,0 +1,52 @@
+{
+  "attempt": 1,
+  "status": "COMPLETED",
+  "summary": {
+    "sent": 10000,
+    "confirmed": 10000,
+    "delivered": 10000,
+    "processed_unique": 10000,
+    "acked": 10000,
+    "dup_business": 0,
+    "processed_rate": 1.0,
+    "dup_rate": 0.0,
+    "loss_rate": 0.0,
+    "avg_delivery_latency_s": 3.2,
+    "recovery_time_s": null,
+    "verdict": "PASS",
+    "details": [
+      {
+        "metric": "processed_rate",
+        "op": ">=",
+        "value": 1.0,
+        "actual": 1.0,
+        "passed": true
+      },
+      {
+        "metric": "dup_rate",
+        "op": "<=",
+        "value": 0.0,
+        "actual": 0.0,
+        "passed": true
+      },
+      {
+        "metric": "loss_rate",
+        "op": "<=",
+        "value": 0.0,
+        "actual": 0.0,
+        "passed": true
+      }
+    ]
+  },
+  "reconciliation": {
+    "dup_business_ids": [],
+    "sent_not_confirmed": [],
+    "confirmed_not_delivered": [],
+    "delivered_not_processed": [],
+    "processed_not_acked": [],
+    "total_events": 50002
+  },
+  "artifacts": [
+    "w6accept/records.jsonl.zip"
+  ]
+}

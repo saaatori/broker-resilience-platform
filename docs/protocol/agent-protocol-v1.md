@@ -49,7 +49,8 @@
 - 请求：`{"seq": int, "ts": str(ISO 8601), "type": "STATUS" | "LOG" | "PROGRESS", "payload": object}`
 - 响应：**202 Accepted**；幂等键 `(eid, seq)`（重复 seq 静默去重）。
 - **ts 口径（v1.0.1 定，决策 11）**：ts = **事件发生时刻**（非上报时刻），UTC ISO 8601 **带时区后缀**。
-- **STATUS 触发语义（v1.0.1 定）**：`DISPATCHED → RUNNING` 由该执行的**首条 `type=STATUS` 事件触发**（不论子状态取值）；STATUS 的 payload 含子状态（取值集=§5 序列，载荷键名第 28 天 schema 固化）。其余 `payload` 结构按 `type` 区分，**第 28 天 JSON Schema 细化**。
+- **STATUS 触发语义（v1.0.1 定）**：`DISPATCHED → RUNNING` 由该执行的**首条 `type=STATUS` 事件触发**（不论子状态取值）；STATUS 的 payload 含子状态（载荷键名 **`substate`**，取值集=§5 序列——**v1.0.2 已固化**）。
+- **payload 三型（v1.0.2 固化，schema 为权威；v1.0.3 起 type 与 payload 形状在 schema 中绑定——错配即拒收）**：STATUS `{substate}`；LOG `{message}`；PROGRESS `{label?, current, total}`——详见 `docs/protocol/schema/events.schema.json`（顶层 oneOf 三完整分支，各含 type const）。
 - 终态后收到 events：记录并返回 2xx、不改状态（§4 兜底，v1.0.1）。
 
 ### 2.5 `POST /executions/{eid}/result`
@@ -58,7 +59,7 @@
 
 - 请求：`{"attempt": int, "status": "COMPLETED" | "FAILED" | "CANCELLED", "summary": object, "reconciliation": object, "artifacts": [str, ...]}`
 - 响应 **200**（v1.0.1 定）；幂等键 `(eid, attempt)`（重复回传幂等落库，不重复生效）。
-- `summary` / `reconciliation` 的对象形状引用**协议邻接契约**（见 §6，M1 已由 counter/metrics 实现）；`artifacts` 为**归档卷挂载点下的相对路径**列表（JSONL zip 等）——Agent 将文件置于共享归档卷（部署前提=实施规划决策 6 归档卷，v1.0.1 定），Go 侧按此路径登记 `test_report.file_path`。
+- `summary` / `reconciliation` 的对象形状**已固化于 `docs/protocol/schema/result.schema.json`**（v1.0.2：键集=counter 六计数+metrics 五指标+verdict/details+差集证据，与 M1 实现 dict 键一致——校验测试钉防漂移）；`artifacts` 为**归档卷挂载点下的相对路径**列表（JSONL zip 等）——Agent 将文件置于共享归档卷（部署前提=实施规划决策 6 归档卷，v1.0.1 定），Go 侧按此路径登记 `test_report.file_path`。
 - 终态后重复/迟到 result：幂等落库、返回 200、不改状态（§4 兜底）。
 
 ### 2.6 `POST /executions/{eid}/cleanup-ack`
@@ -133,7 +134,7 @@ cancel_requested（心跳响应下发）
 }
 ```
 
-**合成规则（第 26 天定稿）**：`params_snapshot` = 场景默认参数（`lab/scenarios/<key>/params.default.json`；day31 起为 `test_scenario.default_params` 的 seed）+ 运行期注入（`task_id` / `execution_id` / `instance_ref`，runner 落盘至 `/work/<execution_id>/params.json`）。
+**合成规则（第 26 天定稿）**：`params_snapshot` = 场景默认参数（`lab/scenarios/<key>/params.default.json`；day31 起为 `test_scenario.default_params` 的 seed）+ 运行期注入（`task_id` / `execution_id` / `instance_ref`，runner 落盘至 `/work/<execution_id>/params.json`）。结构已固化为 `docs/protocol/schema/params_snapshot.schema.json`（v1.0.2；注入键为可选属性——claim 响应与 params.json 文件共用一份 schema）。
 
 ### 6.2 邻接契约（本文档不重复定义，权威指向）
 
@@ -148,3 +149,5 @@ cancel_requested（心跳响应下发）
 
 - **v1.0（2026-11-19）**：首次冻结。6 端点 + 3 错误码 + 任务状态机（表 6 七转移）+ 执行子状态 + params_snapshot（含 idle_timeout_s 与合成规则）+ 邻接契约四指向。勘误：逐日计划"7 端点"系对总体设计表 5 行数的误计（7 行 = 6 端点 + 错误约定行），按 **6 端点**冻结。
 - **v1.0.1（2026-11-19，冻结评审补丁）**：wire 要素补全（评审 1C/7I/6M 处置）。①**取消闭环时序成文**（cleanup-ack 先于 result；CANCELLING 收 result(CANCELLED) 视同转移 ※ 行；终态兜底=记录+2xx+不改状态）；②CANCELLING 并入租约过期转移（→FAILED(lease_lost)）；③result/cleanup-ack 补响应 200；④lease_ok 差集=视同 410 + 410 端点归属（claim/heartbeat，Agent 级；执行级走差集）；⑤DISPATCHED→RUNNING=首条 STATUS 事件触发（不论子状态）+ 子状态取值集钉死；⑥artifacts=归档卷相对路径+共享归档卷部署前提（决策 6）；⑦events.ts=事件发生时刻 UTC 带时区（决策 11）；⑧错误码兜底（其余 4xx 不重试/5xx 退避）+ Agent 轮询默认值（claim 5s/409 上限 30s）；⑨register 幂等（同 hostname 复用 agent_id 换 token）；⑩409 防御性保留注 + SKIP LOCKED 正常路径 204；⑪fault 措辞=正常场景无键。
+- **v1.0.2（2026-11-19，schema 固化）**：JSON Schema 三件入库 `docs/protocol/schema/`（params_snapshot/events/result + samples 三件 + 校验测试入 agent 套件）：①events payload 三型定义（STATUS `{substate}` / LOG `{message}` / PROGRESS `{label?, current, total}`，oneOf 互斥）——子状态载荷键名固化 `substate`；②result 的 summary/reconciliation 键集固化（=counter/metrics 实现 dict 键）；③params 结构固化（注入键=可选属性，两形态共用 schema）。schema 为上述细化项的**权威**，本文档指向之。
+- **v1.0.3（2026-11-19，schema 评审补丁）**：①events schema 改**顶层 oneOf 三完整分支**（type const 绑定 payload 形状）——修复 v1.0.2 的 type↔payload 错配放行（评审实测 LOG+substate/STATUS+message 均曾通过）；②result.details.actual 收窄为 number|null（无 string 生产者）；③details.metric 收紧为五值枚举（与断言侧对称）；④samples 补 LOG/PROGRESS 两件；⑤**语法口径**：三件 schema 为 draft-07 与 2020-12 公共子集（无 $defs/$ref/prefixItems 等独有关键字）——Go 侧库选型不受 draft 限制。

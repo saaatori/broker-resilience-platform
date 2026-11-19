@@ -13,5 +13,13 @@ dependencies = [
 # 纯依赖环境（非可安装包），uv run 免构建直接装依赖
 package = false
 
+[dependency-groups]
+# dev 组随 uv run 默认安装（day28 起：协议 schema 校验依赖 jsonschema[format]——
+# format=date-time 校验需要 rfc3339-validator extra，否则 FormatChecker 对 date-time 是 no-op）
+dev = [
+    "pytest>=8,<10",
+    "jsonschema[format]>=4,<5",
+]
+
 [tool.ruff]
 line-length = 100

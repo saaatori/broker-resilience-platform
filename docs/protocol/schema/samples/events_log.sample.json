@@ -1,0 +1,8 @@
+{
+  "seq": 3,
+  "ts": "2026-11-19T10:00:03+00:00",
+  "type": "LOG",
+  "payload": {
+    "message": "producer done: sent=10000 confirmed=10000"
+  }
+}

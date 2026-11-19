@@ -1,0 +1,8 @@
+{
+  "seq": 0,
+  "ts": "2026-11-19T10:00:00+00:00",
+  "type": "STATUS",
+  "payload": {
+    "substate": "PREPARING"
+  }
+}
