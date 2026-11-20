@@ -2,6 +2,7 @@ package task
 
 import (
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -9,14 +10,17 @@ import (
 )
 
 // fakeTaskRepo taskRepository 的内存实现（单测用；GORM 哨兵错误保持与真实现一致）。
+// ClaimNextTask 只模拟顺序语义（弹最老 PENDING）——并发原子性由集成测试在真库验证。
 type fakeTaskRepo struct {
-	tasks     []*model.TestTask
-	scenarios map[string]*model.TestScenario
-	nextID    int64
+	tasks         []*model.TestTask
+	scenarios     map[string]*model.TestScenario
+	agents        map[string]*model.AgentInstance
+	agentQueryErr error // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
+	nextID        int64
 }
 
 func newFakeTaskRepo() *fakeTaskRepo {
-	return &fakeTaskRepo{scenarios: map[string]*model.TestScenario{}, nextID: 1}
+	return &fakeTaskRepo{scenarios: map[string]*model.TestScenario{}, agents: map[string]*model.AgentInstance{}, nextID: 1}
 }
 
 func (f *fakeTaskRepo) Create(t *model.TestTask) error {
@@ -45,6 +49,47 @@ func (f *fakeTaskRepo) EnsureScenario(s *model.TestScenario) error {
 	f.nextID++
 	f.scenarios[s.Key] = &cp
 	return nil
+}
+
+func (f *fakeTaskRepo) FindAgentByUUID(agentUUID string) (*model.AgentInstance, error) {
+	if f.agentQueryErr != nil {
+		return nil, f.agentQueryErr
+	}
+	a, ok := f.agents[agentUUID]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return a, nil
+}
+
+func (f *fakeTaskRepo) ClaimNextTask(agentRowID int64) (*model.TestTask, *model.TestExecution, string, error) {
+	for _, t := range f.tasks {
+		if t.Status != TaskStatusPENDING {
+			continue
+		}
+		key := ""
+		for _, sc := range f.scenarios { // 按 ScenarioID 反查（与真实现语义一致，不硬编码 key）
+			if sc.ID == t.ScenarioID {
+				key = sc.Key
+				break
+			}
+		}
+		t.Status = "DISPATCHED"
+		now := time.Now()
+		lease := now.Add(LeaseTTL)
+		exec := &model.TestExecution{
+			ExecutionID: "00000000-0000-0000-0000-000000000001",
+			TaskID:      t.ID,
+			Attempt:     1,
+			AgentID:     agentRowID,
+			Status:      "CLAIMED",
+			LeaseUntil:  &lease,
+			StartedAt:   &now,
+		}
+		taskCopy := *t
+		return &taskCopy, exec, key, nil
+	}
+	return nil, nil, "", ErrNoTask
 }
 
 // fakeInstanceRepo instanceFinder 内存实现。

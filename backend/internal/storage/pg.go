@@ -47,6 +47,7 @@ func OpenPG(dsn string) (*gorm.DB, error) {
 	if err := db.AutoMigrate(
 		&model.SysUser{}, &model.BrokerInstance{},
 		&model.TestScenario{}, &model.TestCase{}, &model.TestTask{}, &model.TestExecution{},
+		&model.AgentInstance{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}

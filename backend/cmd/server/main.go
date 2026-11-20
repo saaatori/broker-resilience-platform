@@ -156,7 +156,9 @@ func main() {
 	if err := taskSvc.SeedScenario(); err != nil {
 		log.Fatalf("初始化内置场景失败: %v", err)
 	}
-	task.NewHandler(taskSvc).RegisterRoutes(authed) // 受保护：POST /tasks
+	taskHandler := task.NewHandler(taskSvc)
+	taskHandler.RegisterRoutes(authed)     // 受保护：POST /tasks
+	taskHandler.RegisterAgentRoutes(apiV1) // Agent 协议公开组：POST /agent/tasks/claim（X-Agent-Token 认证 day33 register 后补）
 
 	// /healthz 健康检查：连带探活数据库，供 Compose 探针与排障使用。
 	r.GET("/healthz", func(c *gin.Context) {

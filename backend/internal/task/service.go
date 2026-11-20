@@ -25,6 +25,10 @@ type taskRepository interface {
 	// FindScenarioByKey 只返回 enabled 的场景（禁用场景对建任务视为不存在）。
 	FindScenarioByKey(key string) (*model.TestScenario, error)
 	EnsureScenario(s *model.TestScenario) error
+	// FindAgentByUUID claim 身份解析：协议 agent_id(uuid) → agent_instance 内部行（day32）。
+	FindAgentByUUID(agentUUID string) (*model.AgentInstance, error)
+	// ClaimNextTask 原子领取（SKIP LOCKED 事务；并发语义仅真库可验——单测 fake 只模拟顺序路径）。
+	ClaimNextTask(agentRowID int64) (*model.TestTask, *model.TestExecution, string, error)
 }
 
 // instanceFinder 查询被测实例是否存在（复用 instance.Repository，不重复建模）。
