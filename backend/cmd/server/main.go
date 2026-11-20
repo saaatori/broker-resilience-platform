@@ -19,6 +19,7 @@ import (
 	"github.com/saaatori/broker-resilience-platform/backend/internal/instance"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
+	"github.com/saaatori/broker-resilience-platform/backend/internal/task"
 )
 
 // Config 服务配置，对应 configs/config.yaml。
@@ -141,8 +142,21 @@ func main() {
 	authHandler.RegisterProtectedRoutes(authed) // 受保护：/me
 
 	// instance 模块装配：全部端点挂受保护组。
-	instanceSvc := instance.NewService(instance.NewRepository(db), instance.ServiceConfig{EncryptKey: instanceKey})
+	instanceRepo := instance.NewRepository(db)
+	instanceSvc := instance.NewService(instanceRepo, instance.ServiceConfig{EncryptKey: instanceKey})
 	instance.NewHandler(instanceSvc).RegisterRoutes(authed) // 受保护：POST /instances
+
+	// task 模块装配（M2 第 31 天）：schema 编译与场景 seed 均 fail-fast——
+	// 副本破损/库异常宁可启动期崩溃，不静默放行非法快照（与 jwt_secret 哨兵同口径）。
+	taskValidator, err := task.NewValidator()
+	if err != nil {
+		log.Fatalf("初始化 params_snapshot 校验器失败: %v", err)
+	}
+	taskSvc := task.NewService(task.NewRepository(db), instanceRepo, userRepo, taskValidator)
+	if err := taskSvc.SeedScenario(); err != nil {
+		log.Fatalf("初始化内置场景失败: %v", err)
+	}
+	task.NewHandler(taskSvc).RegisterRoutes(authed) // 受保护：POST /tasks
 
 	// /healthz 健康检查：连带探活数据库，供 Compose 探针与排障使用。
 	r.GET("/healthz", func(c *gin.Context) {

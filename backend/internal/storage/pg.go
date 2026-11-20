@@ -44,7 +44,10 @@ func OpenPG(dsn string) (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	// 新增表时在此追加模型，如 &model.AgentInstance{}
-	if err := db.AutoMigrate(&model.SysUser{}, &model.BrokerInstance{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.SysUser{}, &model.BrokerInstance{},
+		&model.TestScenario{}, &model.TestCase{}, &model.TestTask{}, &model.TestExecution{},
+	); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}
 	return db, nil
