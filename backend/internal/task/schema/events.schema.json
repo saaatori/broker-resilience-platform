@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brp.protocol.event.v1",
+  "title": "POST /executions/{eid}/events 请求体（协议 §2.4；type 与 payload 三型绑定 v1.0.3）",
+  "description": "顶层 oneOf 三完整分支：type const 绑定对应 payload 形状（错配即红）",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "幂等键 (eid, seq) 的序号，执行内严格递增不得重复（v1.0.4）"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time",
+          "description": "事件发生时刻（决策 11），UTC ISO 8601 带时区"
+        },
+        "type": {
+          "const": "STATUS"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "substate": {
+              "enum": [
+                "CLAIMED",
+                "PREPARING",
+                "BASELINE",
+                "FAULT_INJECTED",
+                "RECOVERING",
+                "VERIFYING",
+                "UPLOADING",
+                "DONE",
+                "ABORTED"
+              ]
+            }
+          },
+          "required": [
+            "substate"
+          ],
+          "additionalProperties": false,
+          "description": "执行子状态（协议 §5 序列；首条 STATUS 触发任务态 RUNNING）"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "LOG"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "additionalProperties": false,
+          "description": "关键日志行"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "PROGRESS"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "description": "进度标签（如 sent/drain）"
+            },
+            "current": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "current",
+            "total"
+          ],
+          "additionalProperties": false,
+          "description": "计数型进度"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -66,6 +68,7 @@ func (h *Handler) create(c *gin.Context) {
 // RegisterRoutes 把任务模块路由挂到受 JWT 保护的分组。
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/tasks", h.create)
+	rg.GET("/tasks/:id/events", h.streamTaskEvents)
 }
 
 // RegisterAgentRoutes 把 Agent 协议**公开**路由挂载（仅 register——首次无 token）。
@@ -77,6 +80,101 @@ func (h *Handler) RegisterAgentRoutes(rg *gin.RouterGroup) {
 func (h *Handler) RegisterAgentAuthedRoutes(rg *gin.RouterGroup) {
 	rg.POST("/agent/tasks/claim", h.claim)
 	rg.POST("/agent/heartbeat", h.heartbeat)
+	rg.POST("/executions/:eid/events", h.postEvent)
+}
+
+// maxEventBodyBytes 单条事件体上限（日志型 payload 的输入卫生；协议未定，防御值记档）。
+const maxEventBodyBytes = 64 << 10
+
+// postEvent POST /api/v1/executions/:eid/events（X-Agent-Token）：事件上报（§2.4）。
+// 成功与重复均为 202 空体；404 归属；400 schema/ts；500 闸门故障（Redis 不可用不降级）。
+func (h *Handler) postEvent(c *gin.Context) {
+	agent, ok := agentFromContext(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "agent token 无效"})
+		return
+	}
+	raw, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体读取失败"})
+		return
+	}
+	if len(raw) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体为空"})
+		return
+	}
+	if len(raw) > maxEventBodyBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体过大（事件单条上限 64KB）"})
+		return
+	}
+	switch err := h.svc.Event(agent, c.Param("eid"), raw); {
+	case err == nil:
+		c.Status(http.StatusAccepted) // 202：含重复静默与终态记录（§4 兜底）
+	case errors.Is(err, ErrExecutionNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "执行不存在"})
+	case errors.Is(err, ErrInvalidEvent):
+		detail := strings.TrimPrefix(err.Error(), ErrInvalidEvent.Error()+": ")
+		detail = scrubSchemaURL(detail) // v6 错误首行含 file:///… 构建机路径，剥离（M-6）
+		c.JSON(http.StatusBadRequest, gin.H{"error": "事件不合法（对照 events schema）", "detail": detail})
+	default:
+		log.Printf("task: events 内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+	}
+}
+
+// parseID 从路径参数解析任务 id；非法返回 false（已写响应）。
+func parseID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "任务 id 不合法"})
+		return 0, false
+	}
+	return id, true
+}
+
+// scrubSchemaURL 剥离 v6 错误信息中的 schema 资源 URL（含构建机绝对路径，不外泄）。
+func scrubSchemaURL(detail string) string {
+	if i := strings.Index(detail, "\n- at "); i >= 0 {
+		return detail[i+1:] // 保留违规定位行，丢弃首行 "jsonschema validation failed with 'file://…'"
+	}
+	return detail
+}
+
+// streamTaskEvents GET /api/v1/tasks/:id/events（JWT）：SSE 订阅任务事件流（§2.4 前端面）。
+// 断线不回放（事件无持久化源）——重连后以任务状态查询兜底（v1.0.5 M-3）。
+func (h *Handler) streamTaskEvents(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	if _, err := h.svc.FindTask(id); err != nil { // 任务不存在 404（存在性校验；单角色无越权面）
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
+		return
+	}
+	ch, cancel := h.svc.SubscribeTaskEvents(id)
+	defer cancel()
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no") // nginx 不缓冲（compose 反代链路）
+	keepalive := time.NewTicker(15 * time.Second)
+	defer keepalive.Stop()
+
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return false
+			}
+			c.SSEvent(ev.Name, ev.Data)
+			return true
+		case <-keepalive.C:
+			_, _ = fmt.Fprint(w, ": ping\n\n") // SSE 注释行保活（代理超时防御）；写失败随流关闭
+			return true
+		case <-c.Request.Context().Done():
+			return false
+		}
+	})
 }
 
 // heartbeatRequest 心跳请求体（协议 §2.2）。

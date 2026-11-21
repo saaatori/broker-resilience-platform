@@ -55,14 +55,14 @@ func newHBFixture(t *testing.T) (*Service, *fakeTaskRepo, *model.AgentInstance) 
 	t.Helper()
 	repo := newFakeTaskRepo()
 	agent := &model.AgentInstance{ID: 7, AgentID: "a-uuid", Hostname: "hb-host", TokenHash: "h", Status: "online"}
-	repo.agents[agent.AgentID] = agent // 直接放入（绕过 UpsertAgent 以钉死 ID=7）
-	future := testNow.Add(time.Hour)
+	repo.agents[agent.AgentID] = agent  // 直接放入（绕过 UpsertAgent 以钉死 ID=7）
+	future := time.Now().Add(time.Hour) // 相对真实时钟（Heartbeat 内用 time.Now()）——固定 testNow 会随日历过期
 	repo.execViews = []execView{
 		{Exec: model.TestExecution{ExecutionID: "eid-ok", AgentID: 7, Status: "CLAIMED", LeaseUntil: &future}, TaskStatus: "RUNNING"},
 		{Exec: model.TestExecution{ExecutionID: "eid-cancel", AgentID: 7, Status: "CLAIMED", LeaseUntil: &future}, TaskStatus: "CANCELLING"},
 		{Exec: model.TestExecution{ExecutionID: "eid-other", AgentID: 999, Status: "CLAIMED", LeaseUntil: &future}, TaskStatus: "RUNNING"},
 	}
-	svc := NewService(repo, nil, nil, nil, nil)
+	svc := NewService(repo, ServiceDeps{})
 	return svc, repo, agent
 }
 

@@ -13,7 +13,7 @@ func TestIntegrationHeartbeatRenewsLease(t *testing.T) {
 	db := openIntegrationDB(t)
 	_, taskRow, agent := seedClaimFixture(t, db)
 	repo := NewRepository(db)
-	svc := NewService(repo, nil, nil, nil, nil)
+	svc := NewService(repo, ServiceDeps{})
 
 	_, exec, _, err := repo.ClaimNextTask(agent.ID)
 	if err != nil {

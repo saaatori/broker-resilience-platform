@@ -38,7 +38,7 @@ func TestHashToken(t *testing.T) {
 func TestRegister(t *testing.T) {
 	t.Run("新 hostname 生成新身份", func(t *testing.T) {
 		repo := newFakeTaskRepo()
-		svc := NewService(repo, nil, nil, nil, nil)
+		svc := NewService(repo, ServiceDeps{})
 		res, err := svc.Register("host-a", "1.0.0", 0)
 		if err != nil {
 			t.Fatalf("Register: %v", err)
@@ -62,7 +62,7 @@ func TestRegister(t *testing.T) {
 	})
 	t.Run("同 hostname 复用 agent_id 换 token", func(t *testing.T) {
 		repo := newFakeTaskRepo()
-		svc := NewService(repo, nil, nil, nil, nil)
+		svc := NewService(repo, ServiceDeps{})
 		first, err := svc.Register("host-a", "1.0.0", 2)
 		if err != nil {
 			t.Fatalf("首次 Register: %v", err)

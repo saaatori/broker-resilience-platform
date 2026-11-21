@@ -12,7 +12,7 @@ import (
 // （分裂行的 token 永不失效=悬挂凭证）。
 func TestIntegrationRegisterConcurrentSameHostname(t *testing.T) {
 	db := openIntegrationDB(t)
-	svc := NewService(NewRepository(db), nil, nil, nil, nil)
+	svc := NewService(NewRepository(db), ServiceDeps{})
 
 	const n = 12
 	var wg sync.WaitGroup

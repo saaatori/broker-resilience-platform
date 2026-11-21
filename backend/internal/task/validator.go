@@ -12,7 +12,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-//go:embed schema/params_snapshot.schema.json
+//go:embed schema/*.schema.json
 var schemaFS embed.FS
 
 // schemaResourceName embed 内的资源名与 compiler 资源 URL（同一字符串，AddResource 与 Compile 对应）。

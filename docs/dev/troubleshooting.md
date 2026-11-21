@@ -164,3 +164,99 @@
 **原因**：Git Bash（MSYS）把 `/tmp` 映射到 `C:\Users\<u>\AppData\Local\Temp`，但**原生 Windows Python 不经 MSYS**——`open('/tmp/x')` 相对当前盘符解析为 `F:\tmp\x`（本仓库在 F: 盘）。同一个 `/tmp` 字面量两个世界。
 
 **解决**：跨 bash/Python 的临时文件一律让 Python 用 `os.environ['TEMP']` 定位（或写死 `C:/Users/<u>/AppData/Local/Temp`），勿在 Python 里写 `/tmp/...`；顺带两条循环纪律：`cmd | tail` 后 `$?` 是 tail 的退出码（取真实 rc 用输出落文件或 `PIPESTATUS[0]`）；挂载前 `ls -la | grep "^-"` 预检文件真的是文件。
+
+## GORM 与 ORM
+
+### 20. GORM tag `type:int` 被内置常量名吞掉，列落成 bigint（2026-11-20）
+
+**现象**：`Attempt int` 想按表 20 原文落 `int` 列，加了 `gorm:"type:int"` 后 AutoMigrate 生成的仍是 bigint。
+
+**原因**：GORM schema 解析把 `type:` 值赋给 `field.DataType`，而 `"int"` 恰好等于内置常量 `schema.Int`——命中 postgres driver 的 Int 分支后走默认 size 逻辑（int→bigint），type 写法被短路。
+
+**解决**：类型名写 PG 原生名 `type:integer`（`"integer"` 不与任何 GORM 常量冲突）。教训：GORM 的 type tag 要写目标数据库方言的原生类型名，不写 Go 类型名。
+
+### 21. AutoMigrate 只加不改：已有列的类型不会被 ALTER（2026-11-20）
+
+**现象**：修正模型 tag（bigint→integer）后重启服务，列类型依旧是 bigint，且迁移无任何报错。
+
+**原因**：GORM AutoMigrate 只创建缺失的表/列/索引，不比较也不修改已有列的类型——静默跳过。
+
+**解决**：表还在零行阶段直接 `DROP TABLE` 后重启由 AutoMigrate 重建（无损）；已有数据的表必须手写 ALTER 迁移，AutoMigrate 指望不上。
+
+### 22. 查询结果集嵌套 struct 被 GORM 当关联解析（2026-11-21）
+
+**现象**：`type execView struct { Exec model.TestExecution; TaskStatus string }` 用 `Find(&views)` 扫 JOIN 结果报错：`invalid field found … define a valid foreign key for relations`。
+
+**原因**：GORM 见到结构体字段是另一个 Model 类型，默认按关联（association）处理，试图找外键定义——而这里只是想平铺列。
+
+**解决**：加 `gorm:"embedded"` tag（Exec 列平铺进视图）；别名列配 `gorm:"column:task_status"`。JOIN 视图/DTO 场景记住 embedded。
+
+## Go 依赖库
+
+### 23. jsonschema/v6 的 AddResource 收解码后的 JSON 值，不收 io.Reader（2026-11-20）
+
+**现象**：`c.AddResource(name, bytes.NewReader(raw))` 编译通过，Compile 时报 metaschema 校验失败 `invalid jsonType *bytes.Reader`。
+
+**原因**：v6 的 AddResource 参数是解码后的 JSON 值（`any`）——传 Reader 会被当作 JSON 值本身去校验。v5/v1 传 Reader 的老习惯不适用。
+
+**解决**：先 `jsonschema.UnmarshalJSON(reader)` 解出值再传入（顺带保留 json.Number，与校验侧 UseNumber 口径一致）。另注意：v6 对 schema 的 `format` 默认不校验（no-op），date-time 这类格式断言要么注册 format 回调、要么像本项目一样在应用层 `time.Parse(RFC3339)` 等价后置。
+
+### 24. go:embed 按指令声明匹配：新增文件不进旧指令（2026-11-21）
+
+**现象**：目录里已有 `//go:embed schema/params_snapshot.schema.json`，新拷入 `schema/events.schema.json` 后运行时 `schemaFS.ReadFile` 报 file does not exist。
+
+**原因**：embed 指令显式列出的是**单个文件**，不隐含目录其余文件；embed 没有目录级默认。
+
+**解决**：改为模式匹配 `//go:embed schema/*.schema.json`（目录内全部 schema 一网打尽，新增零维护）。
+
+## 并发与事务
+
+### 25. check-then-act 注册无锁：并发同键注册分裂多行（2026-11-21）
+
+**现象**：register 走"先 FindByHostname 查、无则 Create"两步，功能测试全绿；评审 12 并发 HTTP 探针同 hostname 注册，落出 3 行 3 个 agent_id——分裂行的 token 永不失效成悬挂凭证。本地 30 goroutine 重试多次未复现：**竞态存在与否不以踩没踩中为准，代码层 check-then-act 无锁即成立**。
+
+**原因**：查与插之间存在窗口，唯一性只靠应用层判断，无数据库约束兜底。
+
+**解决**：`hostname` 加唯一约束 + 单语句 `INSERT … ON CONFLICT (hostname) DO UPDATE … RETURNING agent_id`（原子 upsert，冲突分支即"复用身份换凭证"）。教训：幂等不变量必须落到数据库约束上，且并发测试钉不住≠安全（时序运气）。
+
+### 26. 并发测试钉不住 SKIP LOCKED：阻塞式 FOR UPDATE 结果相同（2026-11-20）
+
+**现象**："10 并发抢 1 行恰 1 成功"的集成测试全绿，但把 `Options:"SKIP LOCKED"` 删掉测试照样绿——READ COMMITTED 下后来者等锁释放后发现行已不匹配，同样返回空。测试证明了原子性，没证明 SKIP LOCKED 特性本身。
+
+**解决**：行为级钉子：会话 A 开事务 `FOR UPDATE` 锁住唯一 PENDING 行**不提交**；会话 B 调 claim 必须 2s 内跳过该行返回"无任务"——退化成阻塞锁时 B 挂在行锁上超时判红。双向验证过（删 Options 红/恢复绿）。教训：特性测试要构造"只有该特性才能通过"的场景，而不是结果等价场景。
+
+## 测试编写
+
+### 27. fake 的固定时钟与真实时钟混用：隔天测试全体爆雷（2026-11-21）
+
+**现象**：day33 心跳 fake 用固定 `testNow=2026-11-21 12:00 UTC` 构造租约 `testNow+1h`，被测代码用 `time.Now()`——当天下午真实时钟越过 13:00 UTC 后 fake 判定"租约已过期"，全套心跳测试无端变红。
+
+**原因**：fixture 的时间基准（固定值）与被测路径的时间基准（真实时钟）不一致，固定值提供的是**有效期下限**而非可控时钟。
+
+**解决**：fixture 改 `time.Now().Add(time.Hour)`（相对基准）。教训：fake 时间要么纯注入（被测代码也收 now 参数）、要么纯相对（一律 time.Now() 推导），绝不对半混用。
+
+### 28. channel 断言两坑：closed 恒可读 + len 动态递减（2026-11-21）
+
+**现象①**：订阅 cancel 后 `select { case <-ch: t.Fatal("不应投递") }` 必然触发 Fatal；**现象②**：`for i := 0; i < len(ch); i++ { <-ch }` 消费到一半提前退出，漏收后半（CANCELLING 广播断言因此假失败）。
+
+**原因**：① closed channel 的接收**恒立即可行**（返回零值 ok=false），select 无法区分"有投递"与"已关闭"；② `len(ch)` 随每次接收递减，动态上限每轮都变小。
+
+**解决**：① comma-ok 断言 `case ev, ok := <-ch: if ok { Fatal }`；② 先快照 `n := len(ch)` 再按 n 消费。
+
+## 脚本与工具（续）
+
+### 29. 脚本中途崩溃残留子进程：双订阅者交错污染输出文件（2026-11-21）
+
+**现象**：验收脚本（curl -N 订阅 SSE 落文件）中途异常退出，重跑后输出文件里每条事件出现两遍、"重放恰一次"断言失真。
+
+**原因**：崩溃路径没走到 terminate，旧 curl 进程仍持着订阅与文件句柄继续写；重跑又起一个——两个订阅者各收一份、写同一个文件。
+
+**解决**：脚本开头 `taskkill /F /IM curl.exe` 清残留 + 子进程消费放 try/finally（terminate+wait，异常也 kill）。教训：凡脚本起常驻子进程（订阅/服务），必须保证"任意退出路径都清理"——崩溃防御要在入口做，不能只靠正常收尾。
+
+### 30. Git Bash 管道写中文文件编码混编；GBK 控制台打印崩（2026-11-20~21）
+
+**现象**：bash 里 `cmd | tee file` 或 `xargs … | sort | uniq` 产出的文件中文段落混编损坏（评审读档发现）；Python 脚本 print 含 ✓ 等字符在 GBK 控制台直接 UnicodeEncodeError 崩溃（文件本身无损）。同族：Git Bash 的 `/tmp` 与原生 Python 的 `/tmp` 不是同一目录（#19）在 tee+python 组合里再度复发。
+
+**原因**：Git Bash 管道默认按 locale（GBK/cp936）转码混入；Windows 控制台代码页非 UTF-8 时 stdout 编码炸。
+
+**解决**：验收/证据类文件**一律由 Python 脚本整体生成**（`open(path,"w",encoding="utf-8")`），bash 只负责起服务；Python 脚本头部 `sys.stdout.reconfigure(encoding="utf-8")`；bash 与 Python 之间不传文件路径内容（各管各的临时目录）。教训与 #19 同源：跨 bash/Python 边界的东西（路径/编码）全部显式声明，不靠默认。

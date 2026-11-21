@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ type fakeTaskRepo struct {
 	agents        map[string]*model.AgentInstance
 	agentQueryErr error // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
 	execViews     []execView
+	execRows      []model.TestExecution
 	renewedEIDs   []string // RenewLeases 入参记录（断言"只刷 lease_ok"）
 	renewedUntil  time.Time
 	agentTouched  bool
@@ -183,5 +185,72 @@ func (f *fakeUserRepo) FindByUsername(username string) (*model.SysUser, error) {
 
 // newTestService 装配内存依赖 + 真 Validator（embed 真编译，schema 层不 mock）。
 func newTestService(t *testing.T, repo *fakeTaskRepo, instances map[int64]*model.BrokerInstance, users map[string]*model.SysUser) *Service {
-	return NewService(repo, &fakeInstanceRepo{instances: instances}, &fakeUserRepo{users: users}, newTestValidator(t), nil)
+	return NewService(repo, ServiceDeps{Instances: &fakeInstanceRepo{instances: instances}, Users: &fakeUserRepo{users: users}, Validator: newTestValidator(t)})
+}
+
+// fakeEventGate 事件闸门内存实现（seen 判重；cancelSet 取消标志；failErr 模拟 Redis 故障）。
+type fakeEventGate struct {
+	seen      map[string]bool
+	cancelSet map[string]bool
+	failErr   error
+}
+
+func (f *fakeEventGate) TryClaimSeq(eid string, seq int64) (bool, error) {
+	if f.failErr != nil {
+		return false, f.failErr
+	}
+	key := fmt.Sprintf("%s:%d", eid, seq)
+	if f.seen[key] {
+		return false, nil
+	}
+	f.seen[key] = true
+	return true, nil
+}
+
+func (f *fakeEventGate) CancelFlag(eid string) (bool, error) {
+	if f.failErr != nil {
+		return false, f.failErr
+	}
+	return f.cancelSet[eid], nil
+}
+
+func (f *fakeTaskRepo) FindExecutionByEID(eid string) (*model.TestExecution, error) {
+	for i := range f.execRows {
+		if f.execRows[i].ExecutionID == eid {
+			cp := f.execRows[i]
+			return &cp, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (f *fakeTaskRepo) FindTaskByID(id int64) (*model.TestTask, error) {
+	for _, t := range f.tasks {
+		if t.ID == id {
+			cp := *t
+			return &cp, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+// TransitionTaskStatus CAS 语义：仅当前态=from 才置 to。
+func (f *fakeTaskRepo) TransitionTaskStatus(taskID int64, from, to string) (bool, error) {
+	for _, t := range f.tasks {
+		if t.ID == taskID && t.Status == from {
+			t.Status = to
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeTaskRepo) UpdateExecSubstate(eid, substate string) error {
+	for i := range f.execRows {
+		if f.execRows[i].ExecutionID == eid {
+			f.execRows[i].Status = substate
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
 }

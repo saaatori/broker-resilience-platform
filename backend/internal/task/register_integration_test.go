@@ -12,7 +12,7 @@ import (
 // 库存 token_hash 换新（旧 token 立即失效）、hostname 恰一行。
 func TestIntegrationRegisterIdempotent(t *testing.T) {
 	db := openIntegrationDB(t)
-	svc := NewService(NewRepository(db), nil, nil, nil, nil)
+	svc := NewService(NewRepository(db), ServiceDeps{})
 
 	first, err := svc.Register("it-host", "1.0.0", 0)
 	if err != nil {

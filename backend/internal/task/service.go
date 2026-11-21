@@ -38,6 +38,12 @@ type taskRepository interface {
 	FindExecutionsWithTaskStatus(eids []string) ([]execView, error)
 	RenewLeases(eids []string, until time.Time) error
 	TouchAgentHeartbeat(rowID int64) error
+	// Events 四方法（day34）：归属查询 / 任务态查询 / CAS 转移 / 子状态更新。
+	FindExecutionByEID(eid string) (*model.TestExecution, error)
+	FindTaskByID(id int64) (*model.TestTask, error)
+	// TransitionTaskStatus CAS 状态转移：仅当当前态=from 时置 to，返回是否发生转移（幂等）。
+	TransitionTaskStatus(taskID int64, from, to string) (bool, error)
+	UpdateExecSubstate(eid, substate string) error
 }
 
 // instanceFinder 查询被测实例是否存在（复用 instance.Repository，不重复建模）。
@@ -50,18 +56,45 @@ type userFinder interface {
 	FindByUsername(username string) (*model.SysUser, error)
 }
 
+// ServiceDeps Service 的可选依赖集合（day34 收拢：NewService 参数不再逐个追加；
+// 单测零值即可用——nil 依赖在被触达时才需要）。
+type ServiceDeps struct {
+	Instances instanceFinder
+	Users     userFinder
+	Validator *Validator
+	HB        hbCache // nil=跳过 agent:hb 缓存键（单测）
+	Events    *EventsValidator
+	Gate      eventGate // nil=Event() 不可用（防误用 panic 由调用方装配保证）
+	Hub       *Hub
+}
+
 // Service task 业务逻辑层。
 type Service struct {
-	repo      taskRepository
+	repo taskRepository
+	deps ServiceDeps
+	// 保留快捷引用（Create/Claim/Register 热路径直取）
 	instances instanceFinder
 	users     userFinder
 	validator *Validator
-	hbCache   hbCache // nil=跳过 Redis 缓存键（单测；缓存键非租约本体）
+	hbCache   hbCache
 }
 
-// NewService 注入依赖构造 Service（hb 可为 nil）。
-func NewService(repo taskRepository, instances instanceFinder, users userFinder, validator *Validator, hb hbCache) *Service {
-	return &Service{repo: repo, instances: instances, users: users, validator: validator, hbCache: hb}
+// NewService 注入依赖构造 Service（deps 零值可用于部分路径单测）。
+func NewService(repo taskRepository, deps ServiceDeps) *Service {
+	return &Service{
+		repo: repo, deps: deps,
+		instances: deps.Instances, users: deps.Users, validator: deps.Validator, hbCache: deps.HB,
+	}
+}
+
+// FindTask 任务查询（SSE 订阅存在性校验等 handler 面复用）。
+func (s *Service) FindTask(id int64) (*model.TestTask, error) {
+	return s.repo.FindTaskByID(id)
+}
+
+// SubscribeTaskEvents 前端 SSE 订阅入口（handler 经此触达 hub——deps 私有不外泄）。
+func (s *Service) SubscribeTaskEvents(taskID int64) (<-chan SSEEvent, func()) {
+	return s.deps.Hub.Subscribe(taskID)
 }
 
 // seedScenarioKey 内置场景键（= 场景库目录名，协议 §6.1 合成规则的默认参数来源）。

@@ -172,7 +172,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化 params_snapshot 校验器失败: %v", err)
 	}
-	taskSvc := task.NewService(task.NewRepository(db), instanceRepo, userRepo, taskValidator, task.NewRedisHBCache(rdb))
+	eventsValidator, err := task.NewEventsValidator()
+	if err != nil {
+		log.Fatalf("初始化 events 校验器失败: %v", err)
+	}
+	taskHub := task.NewHub()
+	taskSvc := task.NewService(task.NewRepository(db), task.ServiceDeps{
+		Instances: instanceRepo, Users: userRepo, Validator: taskValidator,
+		HB: task.NewRedisHBCache(rdb),
+		Events: eventsValidator, Gate: task.NewRedisEventGate(rdb), Hub: taskHub,
+	})
 	if err := taskSvc.SeedScenario(); err != nil {
 		log.Fatalf("初始化内置场景失败: %v", err)
 	}

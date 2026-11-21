@@ -89,6 +89,43 @@ func (r *Repository) RenewLeases(eids []string, until time.Time) error {
 		Update("lease_until", until).Error
 }
 
+// FindExecutionByEID events 归属查询（eid=对外 uuid）。
+func (r *Repository) FindExecutionByEID(eid string) (*model.TestExecution, error) {
+	var e model.TestExecution
+	if err := r.db.Where("execution_id = ?", eid).First(&e).Error; err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// FindTaskByID 任务态查询（events 终态兜底判定用）。
+func (r *Repository) FindTaskByID(id int64) (*model.TestTask, error) {
+	var t model.TestTask
+	if err := r.db.First(&t, id).Error; err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// TransitionTaskStatus CAS 状态转移（协议 §4）：仅当当前态=from 时置 to；
+// RowsAffected=1 返回 true（发生转移），=0 返回 false（已转移/已终态——幂等安全）。
+func (r *Repository) TransitionTaskStatus(taskID int64, from, to string) (bool, error) {
+	res := r.db.Model(&model.TestTask{}).
+		Where("id = ? AND status = ?", taskID, from).
+		Update("status", to)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// UpdateExecSubstate STATUS 事件更新执行子状态（表 20："执行子状态（事件上报更新）"）。
+func (r *Repository) UpdateExecSubstate(eid, substate string) error {
+	return r.db.Model(&model.TestExecution{}).
+		Where("execution_id = ?", eid).
+		Update("status", substate).Error
+}
+
 // TouchAgentHeartbeat agent 存活信号：last_heartbeat_at=now + status=online（表 16）。
 func (r *Repository) TouchAgentHeartbeat(rowID int64) error {
 	return r.db.Model(&model.AgentInstance{}).Where("id = ?", rowID).

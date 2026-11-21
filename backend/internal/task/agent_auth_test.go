@@ -16,7 +16,7 @@ import (
 func newAuthTestEngine(repo *fakeTaskRepo) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := NewHandler(NewService(repo, nil, nil, nil, nil))
+	h := NewHandler(NewService(repo, ServiceDeps{}))
 	agentAuthed := r.Group("/api/v1", AgentAuth(repo.FindByTokenHash))
 	h.RegisterAgentAuthedRoutes(agentAuthed)
 	return r
@@ -55,7 +55,7 @@ func TestAgentAuthMiddleware(t *testing.T) {
 // TestAgentAuthPassesTokenOwner 好 token → 放行且注入归属行（引擎内 401 分支不再触发）。
 func TestAgentAuthPassesTokenOwner(t *testing.T) {
 	repo := newFakeTaskRepo()
-	res, err := NewService(repo, nil, nil, nil, nil).Register("own-host", "1.0", 1)
+	res, err := NewService(repo, ServiceDeps{}).Register("own-host", "1.0", 1)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestAgentAuthPassesTokenOwner(t *testing.T) {
 // TestHeartbeatOwnershipViaHTTP heartbeat 归属校验同型（body.agent_id vs token 归属）。
 func TestHeartbeatOwnershipViaHTTP(t *testing.T) {
 	repo := newFakeTaskRepo()
-	res, _ := NewService(repo, nil, nil, nil, nil).Register("hb-host", "1.0", 1)
+	res, _ := NewService(repo, ServiceDeps{}).Register("hb-host", "1.0", 1)
 	r := newAuthTestEngine(repo)
 
 	post := func(body, token string) int {
@@ -103,7 +103,7 @@ func TestHeartbeatOwnershipViaHTTP(t *testing.T) {
 		t.Fatalf("冒报他人 agent_id 心跳应 401，实际 %d", code)
 	}
 	// 旧 token（重新 register 换发后）→ 401（幂等副作用）
-	res2, _ := NewService(repo, nil, nil, nil, nil).Register("hb-host", "1.1", 1)
+	res2, _ := NewService(repo, ServiceDeps{}).Register("hb-host", "1.1", 1)
 	if res2.AgentUUID != res.AgentUUID {
 		t.Fatal("同 hostname 应复用 agent_id")
 	}

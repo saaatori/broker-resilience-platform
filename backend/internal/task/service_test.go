@@ -22,7 +22,7 @@ func newFixture(t *testing.T) *fixture {
 	ins := &model.BrokerInstance{ID: 3, Name: "lab-broker"}
 	user := &model.SysUser{ID: 1, Username: "admin"}
 	users := &fakeUserRepo{users: map[string]*model.SysUser{"admin": user}}
-	svc := NewService(repo, &fakeInstanceRepo{instances: map[int64]*model.BrokerInstance{3: ins}}, users, newTestValidator(t), nil)
+	svc := NewService(repo, ServiceDeps{Instances: &fakeInstanceRepo{instances: map[int64]*model.BrokerInstance{3: ins}}, Users: users, Validator: newTestValidator(t)})
 	if err := svc.SeedScenario(); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -139,9 +139,9 @@ func TestCreate(t *testing.T) {
 
 	// 用例⑥⑦⑧ schema 负例 → ErrInvalidParams
 	for name, override := range map[string]map[string]any{
-		"metric 枚举外":   {"assertions": []any{map[string]any{"metric": "bogus", "op": ">=", "value": 1.0}}},
+		"metric 枚举外":      {"assertions": []any{map[string]any{"metric": "bogus", "op": ">=", "value": 1.0}}},
 		"message_count 0": {"message_count": 0},
-		"顶层未知键":      {"unknown_key": 1},
+		"顶层未知键":           {"unknown_key": 1},
 	} {
 		t.Run("校验拒绝_"+name, func(t *testing.T) {
 			f := newFixture(t)
