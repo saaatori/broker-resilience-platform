@@ -52,9 +52,14 @@ services:
       BRP_DATABASE_DSN: "host=postgres port=5432 user=${POSTGRES_USER} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB} sslmode=disable TimeZone=Asia/Shanghai"
       BRP_AUTH_JWT_SECRET: ${BRP_AUTH_JWT_SECRET}
       BRP_INSTANCE_ENCRYPT_KEY: ${BRP_INSTANCE_ENCRYPT_KEY}
+      # Redis（第 33 天）：缓存类键（agent:hb 等），容器网内服务名直连
+      BRP_REDIS_ADDR: "redis:6379"
+      BRP_REDIS_PASSWORD: ${REDIS_PASSWORD}
     # 不映射宿主机：API 统一走 frontend(nginx) 的 :80 入口；本地 go run 也不再端口冲突
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - platform-net

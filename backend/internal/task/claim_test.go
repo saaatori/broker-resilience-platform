@@ -18,7 +18,7 @@ func newClaimFixture(t *testing.T) (*fixture, *model.AgentInstance, *model.TestT
 	pending := &model.TestTask{ID: 42, ScenarioID: 1, InstanceID: 3, CreatedBy: 1, ParamsSnapshot: `{"message_count":1}`, Status: TaskStatusPENDING}
 	repo.tasks = append(repo.tasks, pending)
 	f.repo = repo
-	f.svc = NewService(repo, nil, nil, nil) // claim 路径不触 instance/user/validator
+	f.svc = NewService(repo, nil, nil, nil, nil) // claim 路径不触 instance/user/validator
 	return f, agent, pending
 }
 

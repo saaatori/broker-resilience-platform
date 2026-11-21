@@ -68,10 +68,71 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/tasks", h.create)
 }
 
-// RegisterAgentRoutes 把 Agent 协议路由挂到**公开**分组（Agent 不走用户 JWT；
-// X-Agent-Token 认证随 day33 register 落地——当前无 token 为中间态，记档开发日志）。
+// RegisterAgentRoutes 把 Agent 协议**公开**路由挂载（仅 register——首次无 token）。
 func (h *Handler) RegisterAgentRoutes(rg *gin.RouterGroup) {
+	rg.POST("/agent/register", h.registerAgent)
+}
+
+// RegisterAgentAuthedRoutes 把需 X-Agent-Token 的 Agent 路由挂到 AgentAuth 中间件组（main 装配）。
+func (h *Handler) RegisterAgentAuthedRoutes(rg *gin.RouterGroup) {
 	rg.POST("/agent/tasks/claim", h.claim)
+	rg.POST("/agent/heartbeat", h.heartbeat)
+}
+
+// heartbeatRequest 心跳请求体（协议 §2.2）。
+type heartbeatRequest struct {
+	AgentID           string   `json:"agent_id" binding:"required,uuid"`
+	RunningExecutions []string `json:"running_executions"` // 可空数组
+}
+
+// heartbeat POST /api/v1/agent/heartbeat（X-Agent-Token）：刷新租约兼取消指令轮询。
+// 200 {lease_ok, cancel_requested}；上报中既不在两数组的执行=差集语义（视同 410，Agent 自行处置）。
+func (h *Handler) heartbeat(c *gin.Context) {
+	agent, ok := agentFromContext(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "agent token 无效"})
+		return
+	}
+	var req heartbeatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	if req.AgentID != agent.AgentID {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "agent token 无效"})
+		return
+	}
+	leaseOK, cancel, err := h.svc.Heartbeat(agent, req.RunningExecutions)
+	if err != nil {
+		log.Printf("task: heartbeat 内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"lease_ok": leaseOK, "cancel_requested": cancel})
+}
+
+// registerAgentRequest 注册请求体（协议 §2.1）。
+type registerAgentRequest struct {
+	Hostname      string `json:"hostname" binding:"required,max=255"`
+	Version       string `json:"version" binding:"required,max=32"`
+	MaxConcurrent int    `json:"max_concurrent" binding:"omitempty,min=0"`
+}
+
+// registerAgent POST /api/v1/agent/register：注册/重注册换 token。
+// 响应 200 {agent_id, agent_token}——token 明文仅此一次（协议 §2.1）。
+func (h *Handler) registerAgent(c *gin.Context) {
+	var req registerAgentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	res, err := h.svc.Register(req.Hostname, req.Version, req.MaxConcurrent)
+	if err != nil {
+		log.Printf("task: agent 注册内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"agent_id": res.AgentUUID, "agent_token": res.Token})
 }
 
 // claimRequest Agent 领取请求体（协议 §2.3）。
@@ -79,16 +140,26 @@ type claimRequest struct {
 	AgentID string `json:"agent_id" binding:"required,uuid"`
 }
 
-// claim POST /api/v1/agent/tasks/claim：原子领取（SKIP LOCKED）。
+// claim POST /api/v1/agent/tasks/claim（X-Agent-Token）：原子领取（SKIP LOCKED）。
 // 200 五键（task_id 为 bigint 十进制字符串，v1.0.5 口径）；无任务 204 空体；
 // 未注册 agent 401（处置=重新 register）；领取冲突 409（防御性保留）。
+// body.agent_id 与 token 归属不一致 → 401（防 A 的 token 冒报 B 的身份）。
 func (h *Handler) claim(c *gin.Context) {
+	agent, ok := agentFromContext(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "agent token 无效"})
+		return
+	}
 	var req claimRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
 		return
 	}
-	res, err := h.svc.Claim(req.AgentID)
+	if req.AgentID != agent.AgentID {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "agent token 无效"})
+		return
+	}
+	res, err := h.svc.Claim(agent.AgentID)
 	switch {
 	case errors.Is(err, ErrNoTask):
 		c.Status(http.StatusNoContent) // 204：SKIP LOCKED 正常路径失败方，空响应体

@@ -39,6 +39,10 @@ type Config struct {
 	Instance struct {
 		EncryptKey string `yaml:"encrypt_key"` // 实例凭据 Fernet 密钥（32 字节 base64url），必填
 	} `yaml:"instance"`
+	Redis struct {
+		Addr     string `yaml:"addr"`     // 例 localhost:6379（本机）/ redis:6379（容器网内）
+		Password string `yaml:"password"` // compose redis --requirepass 同值
+	} `yaml:"redis"`
 }
 
 // loadConfig 读取并解析 YAML 配置，未填字段使用代码内默认值。
@@ -84,6 +88,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := os.LookupEnv("BRP_INSTANCE_ENCRYPT_KEY"); ok {
 		cfg.Instance.EncryptKey = v
 	}
+	if v, ok := os.LookupEnv("BRP_REDIS_ADDR"); ok {
+		cfg.Redis.Addr = v
+	}
+	if v, ok := os.LookupEnv("BRP_REDIS_PASSWORD"); ok {
+		cfg.Redis.Password = v
+	}
 }
 
 func main() {
@@ -123,6 +133,16 @@ func main() {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
 
+	// Redis（M2 第 33 天）：缓存类键（表 26 agent:hb 等）；fail-fast 与 PG 同口径——
+	// 配置错启动期暴露，运行期故障由调用侧告警降级（租约本体在 PG，不阻断心跳）。
+	if cfg.Redis.Addr == "" {
+		log.Fatalf("config.yaml 缺少 redis.addr（本机 localhost:6379；容器 redis:6379）")
+	}
+	rdb, err := storage.OpenRedis(cfg.Redis.Addr, cfg.Redis.Password)
+	if err != nil {
+		log.Fatalf("连接 Redis 失败: %v", err)
+	}
+
 	// auth 模块装配（三件套惯例）：repository → service → 种子管理员 → handler。
 	userRepo := auth.NewUserRepository(db)
 	authSvc := auth.NewService(userRepo, auth.ServiceConfig{
@@ -152,13 +172,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化 params_snapshot 校验器失败: %v", err)
 	}
-	taskSvc := task.NewService(task.NewRepository(db), instanceRepo, userRepo, taskValidator)
+	taskSvc := task.NewService(task.NewRepository(db), instanceRepo, userRepo, taskValidator, task.NewRedisHBCache(rdb))
 	if err := taskSvc.SeedScenario(); err != nil {
 		log.Fatalf("初始化内置场景失败: %v", err)
 	}
 	taskHandler := task.NewHandler(taskSvc)
 	taskHandler.RegisterRoutes(authed)     // 受保护：POST /tasks
-	taskHandler.RegisterAgentRoutes(apiV1) // Agent 协议公开组：POST /agent/tasks/claim（X-Agent-Token 认证 day33 register 后补）
+	taskHandler.RegisterAgentRoutes(apiV1) // Agent 公开：POST /agent/register（首次无 token）
+	// X-Agent-Token 认证组（第 33 天收口 day32 的 claim 无 token 中间态）：claim（heartbeat 第 33 天 T4 加入）
+	agentRepo := task.NewRepository(db)
+	agentAuthed := apiV1.Group("", task.AgentAuth(agentRepo.FindByTokenHash))
+	taskHandler.RegisterAgentAuthedRoutes(agentAuthed)
 
 	// /healthz 健康检查：连带探活数据库，供 Compose 探针与排障使用。
 	r.GET("/healthz", func(c *gin.Context) {

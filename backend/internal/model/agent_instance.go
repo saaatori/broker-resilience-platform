@@ -9,7 +9,7 @@ import "time"
 type AgentInstance struct {
 	ID              int64      `gorm:"primaryKey" json:"id"`
 	AgentID         string     `gorm:"type:uuid;not null;uniqueIndex:uq_agent_agent_id" json:"agent_id"` // 表 25：uq(agent_id)
-	Hostname        string     `gorm:"size:255;not null" json:"hostname"`
+	Hostname        string     `gorm:"size:255;not null;uniqueIndex:uq_agent_hostname" json:"hostname"` // day33 评审 I-1：uq 支撑"同 hostname 复用 agent_id"幂等（v1.0.1）
 	Version         string     `gorm:"size:32;not null" json:"version"`
 	TokenHash       string     `gorm:"size:128;not null" json:"-"`
 	Capabilities    *string    `gorm:"type:jsonb" json:"capabilities,omitempty"`

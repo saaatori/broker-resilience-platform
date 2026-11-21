@@ -10,6 +10,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -29,6 +30,14 @@ type taskRepository interface {
 	FindAgentByUUID(agentUUID string) (*model.AgentInstance, error)
 	// ClaimNextTask 原子领取（SKIP LOCKED 事务；并发语义仅真库可验——单测 fake 只模拟顺序路径）。
 	ClaimNextTask(agentRowID int64) (*model.TestTask, *model.TestExecution, string, error)
+	// UpsertAgent 注册原子幂等（day33 评审 I-1）：ON CONFLICT 单语句，返回（复用的）agent uuid。
+	UpsertAgent(agentUUID, hostname, version, tokenHash string, maxConcurrent int) (string, error)
+	// FindByTokenHash X-Agent-Token 验证（day33）。
+	FindByTokenHash(tokenHash string) (*model.AgentInstance, error)
+	// Heartbeat 三方法（day33）：视图查询 / 批量租约刷新 / agent 存活。
+	FindExecutionsWithTaskStatus(eids []string) ([]execView, error)
+	RenewLeases(eids []string, until time.Time) error
+	TouchAgentHeartbeat(rowID int64) error
 }
 
 // instanceFinder 查询被测实例是否存在（复用 instance.Repository，不重复建模）。
@@ -47,11 +56,12 @@ type Service struct {
 	instances instanceFinder
 	users     userFinder
 	validator *Validator
+	hbCache   hbCache // nil=跳过 Redis 缓存键（单测；缓存键非租约本体）
 }
 
-// NewService 注入依赖构造 Service。
-func NewService(repo taskRepository, instances instanceFinder, users userFinder, validator *Validator) *Service {
-	return &Service{repo: repo, instances: instances, users: users, validator: validator}
+// NewService 注入依赖构造 Service（hb 可为 nil）。
+func NewService(repo taskRepository, instances instanceFinder, users userFinder, validator *Validator, hb hbCache) *Service {
+	return &Service{repo: repo, instances: instances, users: users, validator: validator, hbCache: hb}
 }
 
 // seedScenarioKey 内置场景键（= 场景库目录名，协议 §6.1 合成规则的默认参数来源）。

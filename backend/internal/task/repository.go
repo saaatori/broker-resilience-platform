@@ -69,6 +69,60 @@ func (r *Repository) FindAgentByUUID(agentUUID string) (*model.AgentInstance, er
 	return &a, nil
 }
 
+// FindExecutionsWithTaskStatus 心跳判定视图：exec JOIN task.status 一次取齐（eids 批量）。
+func (r *Repository) FindExecutionsWithTaskStatus(eids []string) ([]execView, error) {
+	var views []execView
+	if err := r.db.Table("test_execution AS e").
+		Select("e.*, t.status AS task_status").
+		Joins("JOIN test_task t ON t.id = e.task_id").
+		Where("e.execution_id IN ?", eids).
+		Find(&views).Error; err != nil {
+		return nil, err
+	}
+	return views, nil
+}
+
+// RenewLeases 批量刷新租约（仅 lease_ok 的执行——取消路径不刷，裁决记档开发日志）。
+func (r *Repository) RenewLeases(eids []string, until time.Time) error {
+	return r.db.Model(&model.TestExecution{}).
+		Where("execution_id IN ?", eids).
+		Update("lease_until", until).Error
+}
+
+// TouchAgentHeartbeat agent 存活信号：last_heartbeat_at=now + status=online（表 16）。
+func (r *Repository) TouchAgentHeartbeat(rowID int64) error {
+	return r.db.Model(&model.AgentInstance{}).Where("id = ?", rowID).
+		Updates(map[string]any{"last_heartbeat_at": time.Now(), "status": agentStatusOnline}).Error
+}
+func (r *Repository) FindByTokenHash(tokenHash string) (*model.AgentInstance, error) {
+	var a model.AgentInstance
+	if err := r.db.Where("token_hash = ?", tokenHash).First(&a).Error; err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// UpsertAgent 注册原子幂等（day33 评审 I-1 修复）：单语句 INSERT … ON CONFLICT (hostname)
+// DO UPDATE + RETURNING agent_id——并发同 hostname 收敛为恰 1 行，复用既有 uuid；
+// 冲突分支换发 token 哈希（旧 token 立即失效）+ 更新版本/并发度/在线态。
+func (r *Repository) UpsertAgent(agentUUID, hostname, version, tokenHash string, maxConcurrent int) (string, error) {
+	var reusedUUID string
+	err := r.db.Raw(`
+		INSERT INTO agent_instance (agent_id, hostname, version, token_hash, max_concurrent, status)
+		VALUES (?, ?, ?, ?, ?, 'online')
+		ON CONFLICT (hostname) DO UPDATE SET
+			token_hash = EXCLUDED.token_hash,
+			version = EXCLUDED.version,
+			max_concurrent = EXCLUDED.max_concurrent,
+			status = 'online'
+		RETURNING agent_id`,
+		agentUUID, hostname, version, tokenHash, maxConcurrent).Scan(&reusedUUID).Error
+	if err != nil {
+		return "", err
+	}
+	return reusedUUID, nil
+}
+
 // ClaimNextTask 原子领取一个 PENDING 任务（协议 v1.0.5 §2.3，状态机转移表行 1）。
 // 单事务：FOR UPDATE SKIP LOCKED 锁最老 PENDING → 无行 ErrNoTask →
 // attempt=COALESCE(MAX,0)+1 → INSERT execution（CLAIMED / 45s 租约 / started_at）→

@@ -22,7 +22,7 @@ func newFixture(t *testing.T) *fixture {
 	ins := &model.BrokerInstance{ID: 3, Name: "lab-broker"}
 	user := &model.SysUser{ID: 1, Username: "admin"}
 	users := &fakeUserRepo{users: map[string]*model.SysUser{"admin": user}}
-	svc := NewService(repo, &fakeInstanceRepo{instances: map[int64]*model.BrokerInstance{3: ins}}, users, newTestValidator(t))
+	svc := NewService(repo, &fakeInstanceRepo{instances: map[int64]*model.BrokerInstance{3: ins}}, users, newTestValidator(t), nil)
 	if err := svc.SeedScenario(); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

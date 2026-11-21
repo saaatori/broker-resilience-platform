@@ -16,6 +16,10 @@ type fakeTaskRepo struct {
 	scenarios     map[string]*model.TestScenario
 	agents        map[string]*model.AgentInstance
 	agentQueryErr error // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
+	execViews     []execView
+	renewedEIDs   []string // RenewLeases 入参记录（断言"只刷 lease_ok"）
+	renewedUntil  time.Time
+	agentTouched  bool
 	nextID        int64
 }
 
@@ -60,6 +64,60 @@ func (f *fakeTaskRepo) FindAgentByUUID(agentUUID string) (*model.AgentInstance, 
 		return nil, gorm.ErrRecordNotFound
 	}
 	return a, nil
+}
+
+func (f *fakeTaskRepo) UpsertAgent(agentUUID, hostname, version, tokenHash string, maxConcurrent int) (string, error) {
+	for _, a := range f.agents { // 已注册：复用 agent_id、换 token（与真 repo ON CONFLICT 语义一致）
+		if a.Hostname == hostname {
+			a.TokenHash = tokenHash
+			a.Version = version
+			a.MaxConcurrent = maxConcurrent
+			a.Status = "online"
+			return a.AgentID, nil
+		}
+	}
+	row := &model.AgentInstance{ID: f.nextID, AgentID: agentUUID, Hostname: hostname, Version: version,
+		TokenHash: tokenHash, MaxConcurrent: maxConcurrent, Status: "online"}
+	f.nextID++
+	f.agents[agentUUID] = row
+	return agentUUID, nil
+}
+
+func (f *fakeTaskRepo) FindByTokenHash(tokenHash string) (*model.AgentInstance, error) {
+	if f.agentQueryErr != nil {
+		return nil, f.agentQueryErr
+	}
+	for _, a := range f.agents {
+		if a.TokenHash == tokenHash {
+			return a, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (f *fakeTaskRepo) FindExecutionsWithTaskStatus(eids []string) ([]execView, error) {
+	set := map[string]bool{}
+	for _, e := range eids {
+		set[e] = true
+	}
+	var out []execView
+	for _, v := range f.execViews {
+		if set[v.Exec.ExecutionID] {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeTaskRepo) RenewLeases(eids []string, until time.Time) error {
+	f.renewedEIDs = append(f.renewedEIDs, eids...)
+	f.renewedUntil = until
+	return nil
+}
+
+func (f *fakeTaskRepo) TouchAgentHeartbeat(rowID int64) error {
+	f.agentTouched = true
+	return nil
 }
 
 func (f *fakeTaskRepo) ClaimNextTask(agentRowID int64) (*model.TestTask, *model.TestExecution, string, error) {
@@ -125,5 +183,5 @@ func (f *fakeUserRepo) FindByUsername(username string) (*model.SysUser, error) {
 
 // newTestService 装配内存依赖 + 真 Validator（embed 真编译，schema 层不 mock）。
 func newTestService(t *testing.T, repo *fakeTaskRepo, instances map[int64]*model.BrokerInstance, users map[string]*model.SysUser) *Service {
-	return NewService(repo, &fakeInstanceRepo{instances: instances}, &fakeUserRepo{users: users}, newTestValidator(t))
+	return NewService(repo, &fakeInstanceRepo{instances: instances}, &fakeUserRepo{users: users}, newTestValidator(t), nil)
 }
