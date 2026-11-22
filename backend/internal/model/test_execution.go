@@ -11,7 +11,7 @@ import "time"
 type TestExecution struct {
 	ID          int64      `gorm:"primaryKey" json:"id"`
 	ExecutionID string     `gorm:"type:uuid;not null;uniqueIndex:uq_execution_attempt,priority:1" json:"execution_id"` // 表 25：uq(execution_id, attempt)
-	TaskID      int64      `gorm:"not null;index:idx_execution_task" json:"task_id"`                                    // 表 25：idx(task_id)
+	TaskID      int64      `gorm:"not null;index:idx_execution_task" json:"task_id"`                                   // 表 25：idx(task_id)
 	Attempt     int        `gorm:"type:integer;not null;uniqueIndex:uq_execution_attempt,priority:2" json:"attempt"`   // 从 1 递增（表 20 原文 int；GORM 的 type:int 会被内置 DataType 常量吞掉，须写 integer）
 	AgentID     int64      `gorm:"not null" json:"agent_id"`
 	Status      string     `gorm:"size:16;not null" json:"status"`

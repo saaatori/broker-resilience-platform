@@ -9,12 +9,12 @@ import "time"
 type AgentInstance struct {
 	ID              int64      `gorm:"primaryKey" json:"id"`
 	AgentID         string     `gorm:"type:uuid;not null;uniqueIndex:uq_agent_agent_id" json:"agent_id"` // 表 25：uq(agent_id)
-	Hostname        string     `gorm:"size:255;not null;uniqueIndex:uq_agent_hostname" json:"hostname"` // day33 评审 I-1：uq 支撑"同 hostname 复用 agent_id"幂等（v1.0.1）
+	Hostname        string     `gorm:"size:255;not null;uniqueIndex:uq_agent_hostname" json:"hostname"`  // day33 评审 I-1：uq 支撑"同 hostname 复用 agent_id"幂等（v1.0.1）
 	Version         string     `gorm:"size:32;not null" json:"version"`
 	TokenHash       string     `gorm:"size:128;not null" json:"-"`
 	Capabilities    *string    `gorm:"type:jsonb" json:"capabilities,omitempty"`
-	MaxConcurrent   int        `gorm:"type:integer;default:1" json:"max_concurrent"` // 表 16 原文 int（type:integer 防内置常量吞）
-	Status          string     `gorm:"size:16;not null" json:"status"`              // 在线/离线
+	MaxConcurrent   int        `gorm:"type:integer;default:1" json:"max_concurrent"`                      // 表 16 原文 int（type:integer 防内置常量吞）
+	Status          string     `gorm:"size:16;not null" json:"status"`                                    // 在线/离线
 	LastHeartbeatAt *time.Time `gorm:"index:idx_agent_last_heartbeat" json:"last_heartbeat_at,omitempty"` // 表 25：idx(last_heartbeat_at)
 	CreatedAt       time.Time  `json:"created_at"`
 }

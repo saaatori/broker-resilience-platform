@@ -38,6 +38,12 @@ type taskRepository interface {
 	FindExecutionsWithTaskStatus(eids []string) ([]execView, error)
 	RenewLeases(eids []string, until time.Time) error
 	TouchAgentHeartbeat(rowID int64) error
+	// Result 五方法（day35）：幂等查询 / 首落 / 指标展开 / artifacts 登记 / 执行终态。
+	FindResultByEID(eid string) (*model.TestResult, error)
+	CreateResult(r *model.TestResult) error
+	SaveMetricSummaries(executionID string, metrics map[string]float64, units map[string]string) error
+	SaveReportArtifacts(taskID int64, executionID string, artifacts []string) error
+	FinishExecution(eid, substate, exitReason string) error
 	// Events 四方法（day34）：归属查询 / 任务态查询 / CAS 转移 / 子状态更新。
 	FindExecutionByEID(eid string) (*model.TestExecution, error)
 	FindTaskByID(id int64) (*model.TestTask, error)
@@ -64,6 +70,7 @@ type ServiceDeps struct {
 	Validator *Validator
 	HB        hbCache // nil=跳过 agent:hb 缓存键（单测）
 	Events    *EventsValidator
+	Result    *ResultValidator
 	Gate      eventGate // nil=Event() 不可用（防误用 panic 由调用方装配保证）
 	Hub       *Hub
 }

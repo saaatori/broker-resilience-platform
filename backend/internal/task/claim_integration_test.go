@@ -24,14 +24,17 @@ func openIntegrationDB(t *testing.T) *gorm.DB {
 	if dsn == "" {
 		t.Skip("需要 BRP_TEST_DSN 指向测试 PG（例：host=localhost port=5432 user=brp password=brp_local_dev dbname=broker_resilience sslmode=disable）")
 	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: gormlogger.Discard})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger:         gormlogger.Discard,
+		TranslateError: true, // 与生产 OpenPG 同口径（uq 冲突译码——day35 评审 I-1：测试连接漏配曾致穿透假象）
+	})
 	if err != nil {
 		t.Fatalf("连测试库: %v", err)
 	}
 	if err := db.AutoMigrate(&model.TestScenario{}, &model.TestTask{}, &model.TestExecution{}, &model.AgentInstance{}); err != nil {
 		t.Fatalf("AutoMigrate: %v", err)
 	}
-	if err := db.Exec("TRUNCATE test_task, test_execution, test_scenario, agent_instance RESTART IDENTITY").Error; err != nil {
+	if err := db.Exec("TRUNCATE test_task, test_execution, test_scenario, agent_instance, test_result, test_metric_summary, test_report RESTART IDENTITY").Error; err != nil {
 		t.Fatalf("TRUNCATE: %v", err)
 	}
 	return db

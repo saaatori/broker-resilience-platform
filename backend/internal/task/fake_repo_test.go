@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -19,6 +20,9 @@ type fakeTaskRepo struct {
 	agentQueryErr error // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
 	execViews     []execView
 	execRows      []model.TestExecution
+	resultRows    map[string]*model.TestResult
+	summaryRows   []model.TestMetricSummary
+	reportRows    []model.TestReport
 	renewedEIDs   []string // RenewLeases 入参记录（断言"只刷 lease_ok"）
 	renewedUntil  time.Time
 	agentTouched  bool
@@ -26,7 +30,7 @@ type fakeTaskRepo struct {
 }
 
 func newFakeTaskRepo() *fakeTaskRepo {
-	return &fakeTaskRepo{scenarios: map[string]*model.TestScenario{}, agents: map[string]*model.AgentInstance{}, nextID: 1}
+	return &fakeTaskRepo{scenarios: map[string]*model.TestScenario{}, agents: map[string]*model.AgentInstance{}, resultRows: map[string]*model.TestResult{}, nextID: 1}
 }
 
 func (f *fakeTaskRepo) Create(t *model.TestTask) error {
@@ -190,9 +194,11 @@ func newTestService(t *testing.T, repo *fakeTaskRepo, instances map[int64]*model
 
 // fakeEventGate 事件闸门内存实现（seen 判重；cancelSet 取消标志；failErr 模拟 Redis 故障）。
 type fakeEventGate struct {
-	seen      map[string]bool
-	cancelSet map[string]bool
-	failErr   error
+	seen          map[string]bool
+	cancelSet     map[string]bool
+	removedCancel map[string]bool
+	removeFail    bool
+	failErr       error
 }
 
 func (f *fakeEventGate) TryClaimSeq(eid string, seq int64) (bool, error) {
@@ -212,6 +218,15 @@ func (f *fakeEventGate) CancelFlag(eid string) (bool, error) {
 		return false, f.failErr
 	}
 	return f.cancelSet[eid], nil
+}
+
+func (f *fakeEventGate) RemoveCancelFlag(eid string) error {
+	if f.removeFail {
+		return errors.New("redis del down")
+	}
+	f.removedCancel[eid] = true
+	delete(f.cancelSet, eid)
+	return nil
 }
 
 func (f *fakeTaskRepo) FindExecutionByEID(eid string) (*model.TestExecution, error) {
@@ -249,6 +264,47 @@ func (f *fakeTaskRepo) UpdateExecSubstate(eid, substate string) error {
 	for i := range f.execRows {
 		if f.execRows[i].ExecutionID == eid {
 			f.execRows[i].Status = substate
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
+}
+
+func (f *fakeTaskRepo) FindResultByEID(eid string) (*model.TestResult, error) {
+	if r, ok := f.resultRows[eid]; ok {
+		return r, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (f *fakeTaskRepo) CreateResult(r *model.TestResult) error {
+	if _, ok := f.resultRows[r.ExecutionID]; ok {
+		return ErrResultExists // 与真库契约一致（TranslateError 后 uq 冲突=ErrResultExists）
+	}
+	cp := *r
+	f.resultRows[r.ExecutionID] = &cp
+	return nil
+}
+
+func (f *fakeTaskRepo) SaveMetricSummaries(executionID string, metrics map[string]float64, units map[string]string) error {
+	for k, v := range metrics {
+		f.summaryRows = append(f.summaryRows, model.TestMetricSummary{ExecutionID: executionID, MetricKey: k, Value: v, Unit: units[k]})
+	}
+	return nil
+}
+
+func (f *fakeTaskRepo) SaveReportArtifacts(taskID int64, executionID string, artifacts []string) error {
+	for _, a := range artifacts {
+		f.reportRows = append(f.reportRows, model.TestReport{TaskID: taskID, ExecutionID: executionID, FilePath: a})
+	}
+	return nil
+}
+
+func (f *fakeTaskRepo) FinishExecution(eid, substate, exitReason string) error {
+	for i := range f.execRows {
+		if f.execRows[i].ExecutionID == eid {
+			f.execRows[i].Status = substate
+			f.execRows[i].ExitReason = &exitReason
 			return nil
 		}
 	}

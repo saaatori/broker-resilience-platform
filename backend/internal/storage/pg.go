@@ -29,7 +29,8 @@ func OpenPG(dsn string) (*gorm.DB, error) {
 		},
 	)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: sqlLog,
+		Logger:         sqlLog,
+		TranslateError: true, // PG 23505 等译成 gorm.ErrDuplicatedKey——uq 幂等兜底依赖此映射（day35 评审 I-1）
 	})
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
@@ -48,6 +49,7 @@ func OpenPG(dsn string) (*gorm.DB, error) {
 		&model.SysUser{}, &model.BrokerInstance{},
 		&model.TestScenario{}, &model.TestCase{}, &model.TestTask{}, &model.TestExecution{},
 		&model.AgentInstance{},
+		&model.TestResult{}, &model.TestMetricSummary{}, &model.TestReport{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}

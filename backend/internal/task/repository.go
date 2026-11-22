@@ -60,8 +60,11 @@ func (r *Repository) EnsureScenario(s *model.TestScenario) error {
 	return r.db.Create(s).Error
 }
 
-// FindAgentByUUID 按协议 agent_id(uuid) 查 agent_instance 行（claim 身份解析）。
+// FindAgentByUUID 按协议 agent_id(uuid) 查 agent_instance 行（claim 身份解析；非 uuid 同归一 404 语义）。
 func (r *Repository) FindAgentByUUID(agentUUID string) (*model.AgentInstance, error) {
+	if _, err := uuid.Parse(agentUUID); err != nil {
+		return nil, gorm.ErrRecordNotFound
+	}
 	var a model.AgentInstance
 	if err := r.db.Where("agent_id = ?", agentUUID).First(&a).Error; err != nil {
 		return nil, err
@@ -89,8 +92,61 @@ func (r *Repository) RenewLeases(eids []string, until time.Time) error {
 		Update("lease_until", until).Error
 }
 
-// FindExecutionByEID events 归属查询（eid=对外 uuid）。
+// FindResultByEID 结果幂等查询（uq(execution_id) first-wins 判定）。
+func (r *Repository) FindResultByEID(eid string) (*model.TestResult, error) {
+	var res model.TestResult
+	if err := r.db.Where("execution_id = ?", eid).First(&res).Error; err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// CreateResult 首次落库；uq(execution_id) 冲突转 ErrResultExists（并发迟到方，service 吞为幂等 200）。
+func (r *Repository) CreateResult(res *model.TestResult) error {
+	if err := r.db.Create(res).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return ErrResultExists
+		}
+		return err
+	}
+	return nil
+}
+
+// SaveMetricSummaries 五指标展开（表 23；uq(execution_id,metric_key) 冲突跳过——幂等防御）。
+func (r *Repository) SaveMetricSummaries(executionID string, metrics map[string]float64, units map[string]string) error {
+	rows := make([]model.TestMetricSummary, 0, len(metrics))
+	for key, value := range metrics {
+		rows = append(rows, model.TestMetricSummary{ExecutionID: executionID, MetricKey: key, Value: value, Unit: units[key]})
+	}
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, len(rows)).Error
+}
+
+// SaveReportArtifacts 每 artifact 一行 test_report（协议 §2.5：Go 侧按路径登记）。
+func (r *Repository) SaveReportArtifacts(taskID int64, executionID string, artifacts []string) error {
+	rows := make([]model.TestReport, 0, len(artifacts))
+	for _, path := range artifacts {
+		rows = append(rows, model.TestReport{TaskID: taskID, ExecutionID: executionID, FilePath: path, GeneratedAt: time.Now()})
+	}
+	return r.db.CreateInBatches(&rows, len(rows)).Error
+}
+
+// FinishExecution 执行收口：子状态置终态（day33 M-2）+ finished_at + exit_reason（表 20）。
+func (r *Repository) FinishExecution(eid, substate, exitReason string) error {
+	updates := map[string]any{"status": substate, "finished_at": time.Now()}
+	if exitReason != "" {
+		updates["exit_reason"] = exitReason // COMPLETED=空 / FAILED=error / CANCELLED=cancelled
+	}
+	return r.db.Model(&model.TestExecution{}).
+		Where("execution_id = ?", eid).
+		Updates(updates).Error
+}
+
+// FindExecutionByEID events/result 归属查询（eid=对外 uuid）。
+// 非 uuid 字符串前置归一为 RecordNotFound（uuid 列 22P02 输入错误会 500——协议 §1：不存在 eid 得 404）。
 func (r *Repository) FindExecutionByEID(eid string) (*model.TestExecution, error) {
+	if _, err := uuid.Parse(eid); err != nil {
+		return nil, gorm.ErrRecordNotFound
+	}
 	var e model.TestExecution
 	if err := r.db.Where("execution_id = ?", eid).First(&e).Error; err != nil {
 		return nil, err

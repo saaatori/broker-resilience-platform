@@ -260,3 +260,11 @@
 **原因**：Git Bash 管道默认按 locale（GBK/cp936）转码混入；Windows 控制台代码页非 UTF-8 时 stdout 编码炸。
 
 **解决**：验收/证据类文件**一律由 Python 脚本整体生成**（`open(path,"w",encoding="utf-8")`），bash 只负责起服务；Python 脚本头部 `sys.stdout.reconfigure(encoding="utf-8")`；bash 与 Python 之间不传文件路径内容（各管各的临时目录）。教训与 #19 同源：跨 bash/Python 边界的东西（路径/编码）全部显式声明，不靠默认。
+
+### 31. 集成测试设施与生产配置漂移：TranslateError 单侧生效 + TRUNCATE 清单不随新表更新（2026-11-22）
+
+**现象**：①uq 并发兜底集成测试收到裸 23505 PgError 而非 ErrDuplicatedKey——生产 OpenPG 已开 `TranslateError: true`，测试仍穿透；修完①后并发用例又"两发全撞唯一键"——test_result 表残留上一轮行。
+
+**原因**：①集成测试用独立的 `gorm.Open`（openIntegrationDB）只配了 Logger，**没抄生产的 TranslateError**——同一份代码两种错误形态，测试结论失真（会误判生产缺陷或掩盖真缺陷）；②openIntegrationDB 的 TRUNCATE 清单是 day31 写死的四表，day35 新增三表没进清单——跨轮残留行让并发断言错乱。
+
+**解决**：①集成设施配置与生产逐项对齐（TranslateError 等）；②TRUNCATE 一律列全清单或改 `TRUNCATE ... CASCADE` + 显式列维护惯例。教训：**自建测试设施的配置是一份"影子生产配置"，每次改生产 OpenPG 必须同步检查测试侧**；TRUNCATE 清单跟着表清单走（加表日即加清单日）。

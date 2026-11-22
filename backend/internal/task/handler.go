@@ -81,10 +81,45 @@ func (h *Handler) RegisterAgentAuthedRoutes(rg *gin.RouterGroup) {
 	rg.POST("/agent/tasks/claim", h.claim)
 	rg.POST("/agent/heartbeat", h.heartbeat)
 	rg.POST("/executions/:eid/events", h.postEvent)
+	rg.POST("/executions/:eid/result", h.postResult)
+}
+
+// postResult POST /api/v1/executions/:eid/result（X-Agent-Token）：结果回传（§2.5）。
+// 成功/重复/尾随均 200（first-wins 幂等）；404 归属；400 schema/attempt；500 内部。
+func (h *Handler) postResult(c *gin.Context) {
+	agent, ok := agentFromContext(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "agent token 无效"})
+		return
+	}
+	raw, err := c.GetRawData()
+	if err != nil || len(raw) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体为空或读取失败"})
+		return
+	}
+	if len(raw) > maxResultBodyBytes { // 独立上限：reconciliation 差集数组可达千条（M3 大丢失场景），64KB 会误杀（day35 评审 I-4）
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体过大（result 上限 4MB）"})
+		return
+	}
+	switch err := h.svc.Result(agent, c.Param("eid"), raw); {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"status": "ok"}) // 协议 §2.5 v1.0.1：响应 200
+	case errors.Is(err, ErrExecutionNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "执行不存在"})
+	case errors.Is(err, ErrInvalidResult):
+		detail := strings.TrimPrefix(err.Error(), ErrInvalidResult.Error()+": ")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "结果不合法（对照 result schema）", "detail": scrubSchemaURL(detail)})
+	default:
+		log.Printf("task: result 内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+	}
 }
 
 // maxEventBodyBytes 单条事件体上限（日志型 payload 的输入卫生；协议未定，防御值记档）。
 const maxEventBodyBytes = 64 << 10
+
+// maxResultBodyBytes 结果体独立上限（差集证据数组 M3 可达千条；记档：M3 观察实际体量再议协议级上限）。
+const maxResultBodyBytes = 4 << 20
 
 // postEvent POST /api/v1/executions/:eid/events（X-Agent-Token）：事件上报（§2.4）。
 // 成功与重复均为 202 空体；404 归属；400 schema/ts；500 闸门故障（Redis 不可用不降级）。

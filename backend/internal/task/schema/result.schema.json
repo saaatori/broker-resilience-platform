@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brp.protocol.result.v1",
+  "title": "POST /executions/{eid}/result 请求体（协议 §2.5；summary/reconciliation 键=counter/metrics 实现）",
+  "type": "object",
+  "properties": {
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "幂等键 (eid, attempt)"
+    },
+    "status": {
+      "enum": [
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "sent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delivered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processed_unique": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dup_business": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processed_rate": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dup_rate": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loss_rate": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "avg_delivery_latency_s": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_time_s": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": {
+                "enum": [
+                  "processed_rate",
+                  "dup_rate",
+                  "loss_rate",
+                  "avg_delivery_latency_s",
+                  "recovery_time_s"
+                ]
+              },
+              "op": {
+                "enum": [
+                  "==",
+                  ">=",
+                  "<=",
+                  ">",
+                  "<"
+                ]
+              },
+              "value": {
+                "type": "number"
+              },
+              "actual": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "metric",
+              "op",
+              "value",
+              "actual",
+              "passed"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "sent",
+        "confirmed",
+        "delivered",
+        "processed_unique",
+        "acked",
+        "dup_business",
+        "processed_rate",
+        "dup_rate",
+        "loss_rate",
+        "avg_delivery_latency_s",
+        "recovery_time_s",
+        "verdict",
+        "details"
+      ],
+      "additionalProperties": false,
+      "description": "六计数（counter 权威面）+ 五指标（metrics）+ 断言判定"
+    },
+    "reconciliation": {
+      "type": "object",
+      "properties": {
+        "dup_business_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sent_not_confirmed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "confirmed_not_delivered": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "delivered_not_processed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "processed_not_acked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "total_events": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "dup_business_ids",
+        "sent_not_confirmed",
+        "confirmed_not_delivered",
+        "delivered_not_processed",
+        "processed_not_acked",
+        "total_events"
+      ],
+      "additionalProperties": false,
+      "description": "证据面（counter 差集与透明披露）"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "归档卷挂载点下的相对路径列表（v1.0.1）"
+    }
+  },
+  "required": [
+    "attempt",
+    "status",
+    "summary",
+    "reconciliation",
+    "artifacts"
+  ],
+  "additionalProperties": false
+}

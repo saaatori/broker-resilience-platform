@@ -20,6 +20,8 @@ type eventGate interface {
 	TryClaimSeq(eid string, seq int64) (bool, error)
 	// CancelFlag 读取取消标志（读取故障由调用方记日志降级为无标志——取消闭环有心跳兜底）。
 	CancelFlag(eid string) (bool, error)
+	// RemoveCancelFlag 执行结束时删 exec:cancel:{eid}（表 26 TTL=执行结束；失败仅告警）。
+	RemoveCancelFlag(eid string) error
 }
 
 // RedisEventGate go-redis 实现（main 装配）。
@@ -52,4 +54,11 @@ func (g *RedisEventGate) CancelFlag(eid string) (bool, error) {
 		return false, fmt.Errorf("redis EXISTS exec:cancel: %w", err)
 	}
 	return n > 0, nil
+}
+
+// RemoveCancelFlag DEL exec:cancel:{eid}（表 26：执行结束）。
+func (g *RedisEventGate) RemoveCancelFlag(eid string) error {
+	ctx, cancel := g.ctx()
+	defer cancel()
+	return g.client.Del(ctx, "exec:cancel:"+eid).Err()
 }
