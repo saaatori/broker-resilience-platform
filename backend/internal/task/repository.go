@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/gorm/logger"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -136,9 +138,28 @@ func (r *Repository) FinishExecution(eid, substate, exitReason string) error {
 	if exitReason != "" {
 		updates["exit_reason"] = exitReason // COMPLETED=空 / FAILED=error / CANCELLED=cancelled
 	}
+	// 终态保持（day37 评审 I-1）：先到者固化——sweep 与 result 竞态时后写方 RowsAffected=0 幂等放弃，
+	// 杜绝 test_result=COMPLETED 而 exec=ABORTED 的写序互覆盖账实矛盾。
 	return r.db.Model(&model.TestExecution{}).
-		Where("execution_id = ?", eid).
+		Where("execution_id = ? AND status NOT IN ?", eid, []string{string(execStatusDone), string(execStatusAborted)}).
 		Updates(updates).Error
+}
+
+// FindLeaseExpired 清扫扫描集：e.lease_until < now 且任务非终态（DISPATCHED/RUNNING/CANCELLING；
+// 中断窗口 exec DONE+任务未转 含内——day35 记档兜底）；表 25 idx(lease_until) 支撑。
+func (r *Repository) FindLeaseExpired(now time.Time) ([]execView, error) {
+	var views []execView
+	// 周期空轮不打 SQL 日志（day37 评审 M-4：默认 45s 下约 1920 条/天噪音）——Session 级静默
+	if err := r.db.Session(&gorm.Session{Logger: logger.Discard}).
+		Table("test_execution AS e").
+		Select("e.*, t.status AS task_status").
+		Joins("JOIN test_task t ON t.id = e.task_id").
+		Where("e.lease_until < ? AND t.status IN ?", now,
+			[]string{string(StateDispatched), string(StateRunning), string(StateCancelling)}).
+		Find(&views).Error; err != nil {
+		return nil, err
+	}
+	return views, nil
 }
 
 // FindExecutionByEID events/result 归属查询（eid=对外 uuid）。

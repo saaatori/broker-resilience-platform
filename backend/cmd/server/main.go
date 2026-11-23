@@ -183,13 +183,26 @@ func main() {
 	taskHub := task.NewHub()
 	taskSvc := task.NewService(task.NewRepository(db), task.ServiceDeps{
 		Instances: instanceRepo, Users: userRepo, Validator: taskValidator,
-		HB: task.NewRedisHBCache(rdb),
+		HB:     task.NewRedisHBCache(rdb),
 		Events: eventsValidator, Result: resultValidator,
 		Gate: task.NewRedisEventGate(rdb), Hub: taskHub,
+		CleanupQueue: task.NewRedisCleanupQueue(rdb),
 	})
 	if err := taskSvc.SeedScenario(); err != nil {
 		log.Fatalf("初始化内置场景失败: %v", err)
 	}
+	// 租约清扫器（第 37 天）：默认 45s 周期（与租约口径同值）；BRP_SWEEP_INTERVAL 可配
+	//（Go duration，如 2s——验收编排用短周期观察"5s 内被清扫"）；进程退出随死（day40 端到端再议优雅退出）。
+	sweepInterval := 45 * time.Second
+	if v, ok := os.LookupEnv("BRP_SWEEP_INTERVAL"); ok {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			sweepInterval = d
+		} else {
+			log.Printf("BRP_SWEEP_INTERVAL=%q 非法，保持默认 %s", v, sweepInterval)
+		}
+	}
+	go task.NewSweeper(taskSvc, sweepInterval).Loop()
+
 	taskHandler := task.NewHandler(taskSvc)
 	taskHandler.RegisterRoutes(authed)     // 受保护：POST /tasks
 	taskHandler.RegisterAgentRoutes(apiV1) // Agent 公开：POST /agent/register（首次无 token）

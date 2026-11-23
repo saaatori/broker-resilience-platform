@@ -20,6 +20,7 @@ type fakeTaskRepo struct {
 	agentQueryErr error // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
 	execViews     []execView
 	execRows      []model.TestExecution
+	sweepViews    []execView
 	resultRows    map[string]*model.TestResult
 	summaryRows   []model.TestMetricSummary
 	reportRows    []model.TestReport
@@ -270,6 +271,10 @@ func (f *fakeTaskRepo) UpdateExecSubstate(eid, substate string) error {
 	return gorm.ErrRecordNotFound
 }
 
+func (f *fakeTaskRepo) FindLeaseExpired(now time.Time) ([]execView, error) {
+	return f.sweepViews, nil // 命中集由测试注入（终态过滤等 repo 层语义由真库集成测试覆盖）
+}
+
 func (f *fakeTaskRepo) FindResultByEID(eid string) (*model.TestResult, error) {
 	if r, ok := f.resultRows[eid]; ok {
 		return r, nil
@@ -305,6 +310,8 @@ func (f *fakeTaskRepo) FinishExecution(eid, substate, exitReason string) error {
 		if f.execRows[i].ExecutionID == eid {
 			f.execRows[i].Status = substate
 			f.execRows[i].ExitReason = &exitReason
+			now := time.Now() // 与真 repo 对齐：finished_at 一并落
+			f.execRows[i].FinishedAt = &now
 			return nil
 		}
 	}

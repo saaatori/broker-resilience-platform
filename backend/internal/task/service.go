@@ -44,6 +44,8 @@ type taskRepository interface {
 	SaveMetricSummaries(executionID string, metrics map[string]float64, units map[string]string) error
 	SaveReportArtifacts(taskID int64, executionID string, artifacts []string) error
 	FinishExecution(eid, substate, exitReason string) error
+	// FindLeaseExpired 清扫扫描（day37）：租约过期且任务非终态的执行视图（中断窗口含内）。
+	FindLeaseExpired(now time.Time) ([]execView, error)
 	// Events 四方法（day34）：归属查询 / 任务态查询 / CAS 转移 / 子状态更新。
 	FindExecutionByEID(eid string) (*model.TestExecution, error)
 	FindTaskByID(id int64) (*model.TestTask, error)
@@ -65,14 +67,15 @@ type userFinder interface {
 // ServiceDeps Service 的可选依赖集合（day34 收拢：NewService 参数不再逐个追加；
 // 单测零值即可用——nil 依赖在被触达时才需要）。
 type ServiceDeps struct {
-	Instances instanceFinder
-	Users     userFinder
-	Validator *Validator
-	HB        hbCache // nil=跳过 agent:hb 缓存键（单测）
-	Events    *EventsValidator
-	Result    *ResultValidator
-	Gate      eventGate // nil=Event() 不可用（防误用 panic 由调用方装配保证）
-	Hub       *Hub
+	Instances    instanceFinder
+	Users        userFinder
+	Validator    *Validator
+	HB           hbCache // nil=跳过 agent:hb 缓存键（单测）
+	Events       *EventsValidator
+	Result       *ResultValidator
+	Gate         eventGate // nil=Event() 不可用（防误用 panic 由调用方装配保证）
+	Hub          *Hub
+	CleanupQueue cleanupQueue // nil=清扫不入队（单测）
 }
 
 // Service task 业务逻辑层。
