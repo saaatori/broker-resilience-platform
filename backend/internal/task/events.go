@@ -107,18 +107,20 @@ func (s *Service) Event(agent *model.AgentInstance, eid string, raw []byte) erro
 			// 读取故障按无标志处理（转 RUNNING）——取消闭环有心跳 cancel_requested 兜底，记档
 			log.Printf("task: exec:cancel 读取失败（按无标志处理）: %v", cErr)
 		}
-		var to string
+		// 转移经状态机决策表（唯一事实源）：置标志=EventCancelTriggered（v1.0.5 I-2），否则 EventFirstStatus
+		ev := EventFirstStatus
 		if cancel {
-			to = taskStatusCancelling
-		} else {
-			to = "RUNNING"
+			ev = EventCancelTriggered
 		}
-		moved, err := s.repo.TransitionTaskStatus(task.ID, "DISPATCHED", to)
-		if err != nil {
-			return fmt.Errorf("transition task: %w", err)
-		}
-		if moved {
-			s.deps.Hub.Publish(task.ID, SSEEvent{Name: "task", Data: map[string]any{"task_id": task.ID, "status": to}})
+		if tj := transition(TaskState(task.Status), ev); tj.OK && tj.To != "" {
+			// 转移仅 DISPATCHED 合法（决策表）；RUNNING/终态收 STATUS=拒绝（无转移）但子状态仍更新（表 20）
+			moved, err := s.repo.TransitionTaskStatus(task.ID, task.Status, string(tj.To))
+			if err != nil {
+				return fmt.Errorf("transition task: %w", err)
+			}
+			if moved { // ActionBroadcastStart（决策表动作）
+				s.deps.Hub.Publish(task.ID, SSEEvent{Name: "task", Data: map[string]any{"task_id": task.ID, "status": string(tj.To)}})
+			}
 		}
 		if err := s.repo.UpdateExecSubstate(eid, payload.Substate); err != nil {
 			return fmt.Errorf("update exec substate: %w", err)

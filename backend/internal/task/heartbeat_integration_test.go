@@ -46,7 +46,7 @@ func TestIntegrationHeartbeatRenewsLease(t *testing.T) {
 	}
 
 	// CANCELLING：入 cancel_requested 且不再刷新（仅 lease_ok 刷新）
-	db.Model(&model.TestTask{}).Where("id = ?", taskRow.ID).Update("status", taskStatusCancelling)
+	db.Model(&model.TestTask{}).Where("id = ?", taskRow.ID).Update("status", string(StateCancelling))
 	time.Sleep(1100 * time.Millisecond)
 	leaseOK, cancel, err = svc.Heartbeat(agent, []string{eid})
 	if err != nil {

@@ -20,8 +20,7 @@ const (
 
 // 执行子状态与任务态常量（状态机 v1.0.5 §4/§5；集中定义防散落字符串漂移）。
 const (
-	taskStatusCancelling = "CANCELLING"
-	agentStatusOnline    = "online"
+	agentStatusOnline = "online"
 )
 
 // heartbeatTTL agent:hb 缓存键 TTL（表 26：60s）。
@@ -56,7 +55,7 @@ func judgeExec(v execView, agentRowID int64, now time.Time) execVerdict {
 	if v.Exec.LeaseUntil == nil || !v.Exec.LeaseUntil.After(now) {
 		return execExclude
 	}
-	if v.TaskStatus == taskStatusCancelling {
+	if v.TaskStatus == string(StateCancelling) {
 		return execCancel
 	}
 	return execLeaseOK

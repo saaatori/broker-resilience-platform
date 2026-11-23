@@ -229,7 +229,7 @@ func (r *Repository) ClaimNextTask(agentRowID int64) (*model.TestTask, *model.Te
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		// First 自带主键升序（=最老 PENDING 先领）；显式 Order("id") 会与之叠加成双重排序列。
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status = ?", TaskStatusPENDING).
+			Where("status = ?", string(StatePending)).
 			First(&task).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNoTask
@@ -256,7 +256,7 @@ func (r *Repository) ClaimNextTask(agentRowID int64) (*model.TestTask, *model.Te
 			return fmt.Errorf("create execution: %w", err)
 		}
 
-		res := tx.Model(&model.TestTask{}).Where("id = ?", task.ID).Update("status", "DISPATCHED")
+		res := tx.Model(&model.TestTask{}).Where("id = ?", task.ID).Update("status", string(StateDispatched))
 		if res.Error != nil {
 			return fmt.Errorf("dispatch task: %w", res.Error)
 		}
@@ -264,7 +264,7 @@ func (r *Repository) ClaimNextTask(agentRowID int64) (*model.TestTask, *model.Te
 			// 行已被 FOR UPDATE 锁定，理论不可达——防御性保留（协议 409 语义）。
 			return fmt.Errorf("dispatch task %d: %w", task.ID, ErrClaimConflict)
 		}
-		task.Status = "DISPATCHED"
+		task.Status = string(StateDispatched)
 
 		// scenario 行缺失（外键孤儿数据）不静默降级为空 key——整体失败回滚，走 500+日志（day32 评审 M-3）。
 		if err := tx.Raw("SELECT key FROM test_scenario WHERE id = ?", task.ScenarioID).Scan(&scenarioKey).Error; err != nil {

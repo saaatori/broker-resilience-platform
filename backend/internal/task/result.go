@@ -31,21 +31,22 @@ type resultEnvelope struct {
 	Artifacts      []string        `json:"artifacts"`
 }
 
-// decideTransition 状态机转移矩阵（协议 §4 转移表全积，15 格决策表测试钉死）：
-// 返回目标态；""=不改态（取消优先/非取消态 CANCELLED/终态兜底/PENDING 防御）。
+// decideTransition result 面转移（statemachine 决策表的薄包装——15 格测试钉 result 面语义；
+// 唯一事实源见 statemachine.go，本函数仅为既有调用方保持 string 签名）。
 func decideTransition(taskStatus, resultStatus string) string {
-	switch {
-	case resultStatus == "COMPLETED" || resultStatus == "FAILED":
-		switch taskStatus {
-		case "RUNNING", "DISPATCHED": // DISPATCHED=v1.0.4 ※※（STATUS 前崩溃恢复直传）
-			return resultStatus
-		case "CANCELLING": // v1.0.4 ※※ 表行 9：取消意图优先——result 照录、任务转取消终态（清理照常兜底）
-			return "CANCELLED"
-		}
-	case resultStatus == "CANCELLED" && taskStatus == "CANCELLING": // v1.0.1 ※：视同 cleanup-ack
-		return "CANCELLED"
+	return string(transition(TaskState(taskStatus), resultEventOf(resultStatus)).To)
+}
+
+// resultEventOf result status → 状态机事件。
+func resultEventOf(resultStatus string) TaskEvent {
+	switch resultStatus {
+	case "COMPLETED":
+		return EventResultCompleted
+	case "FAILED":
+		return EventResultFailed
+	case "CANCELLED":
+		return EventResultCancelled
 	}
-	// 其余（终态兜底 / PENDING 防御 / 非取消态 CANCELLED=v1.0.5 I-1 照录）均不改态。
 	return ""
 }
 

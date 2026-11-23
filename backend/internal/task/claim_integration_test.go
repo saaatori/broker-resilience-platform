@@ -51,7 +51,7 @@ func seedClaimFixture(t *testing.T, db *gorm.DB) (*model.TestScenario, *model.Te
 	if err := db.Create(sc).Error; err != nil {
 		t.Fatalf("造 scenario: %v", err)
 	}
-	taskRow := &model.TestTask{ScenarioID: sc.ID, InstanceID: 1, CreatedBy: 1, ParamsSnapshot: `{"message_count":1}`, Status: TaskStatusPENDING}
+	taskRow := &model.TestTask{ScenarioID: sc.ID, InstanceID: 1, CreatedBy: 1, ParamsSnapshot: `{"message_count":1}`, Status: string(StatePending)}
 	if err := db.Create(taskRow).Error; err != nil {
 		t.Fatalf("造 task: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestIntegrationClaimSingle(t *testing.T) {
 func TestIntegrationClaimNoTask(t *testing.T) {
 	db := openIntegrationDB(t)
 	_, _, agent := seedClaimFixture(t, db)
-	db.Model(&model.TestTask{}).Where("status = ?", TaskStatusPENDING).Update("status", "DISPATCHED") // 清掉 PENDING
+	db.Model(&model.TestTask{}).Where("status = ?", string(StatePending)).Update("status", "DISPATCHED") // 清掉 PENDING
 	repo := NewRepository(db)
 
 	if _, _, _, err := repo.ClaimNextTask(agent.ID); !errors.Is(err, ErrNoTask) {
@@ -144,7 +144,7 @@ func TestIntegrationClaimSkipsLockedRow(t *testing.T) {
 	txA := db.Begin()
 	defer txA.Rollback()
 	var lockedID int64
-	if err := txA.Raw("SELECT id FROM test_task WHERE status = ? FOR UPDATE", TaskStatusPENDING).Scan(&lockedID).Error; err != nil {
+	if err := txA.Raw("SELECT id FROM test_task WHERE status = ? FOR UPDATE", string(StatePending)).Scan(&lockedID).Error; err != nil {
 		t.Fatalf("会话 A 锁行: %v", err)
 	}
 	if lockedID == 0 {

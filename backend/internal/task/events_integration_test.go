@@ -94,7 +94,7 @@ func seedScenarioAndTask(t *testing.T, db *gorm.DB) (*model.TestScenario, *model
 	if err := db.Create(sc).Error; err != nil {
 		t.Fatalf("造 scenario: %v", err)
 	}
-	taskRow := &model.TestTask{ScenarioID: sc.ID, InstanceID: 1, CreatedBy: 1, ParamsSnapshot: `{"message_count":1}`, Status: TaskStatusPENDING}
+	taskRow := &model.TestTask{ScenarioID: sc.ID, InstanceID: 1, CreatedBy: 1, ParamsSnapshot: `{"message_count":1}`, Status: string(StatePending)}
 	if err := db.Create(taskRow).Error; err != nil {
 		t.Fatalf("造 task: %v", err)
 	}

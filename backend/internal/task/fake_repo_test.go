@@ -128,7 +128,7 @@ func (f *fakeTaskRepo) TouchAgentHeartbeat(rowID int64) error {
 
 func (f *fakeTaskRepo) ClaimNextTask(agentRowID int64) (*model.TestTask, *model.TestExecution, string, error) {
 	for _, t := range f.tasks {
-		if t.Status != TaskStatusPENDING {
+		if t.Status != string(StatePending) {
 			continue
 		}
 		key := ""

@@ -141,9 +141,6 @@ var (
 	ErrInvalidParams    = fmt.Errorf("invalid params_snapshot")
 )
 
-// TaskStatusPENDING 任务初始态（协议 v1.0.5 §4：领取起才进入 DISPATCHED）。
-const TaskStatusPENDING = "PENDING"
-
 // Create 创建测试任务：场景默认参数 + 用户顶层浅覆盖 + 平台注入 → schema 校验 → 落库 PENDING。
 // 平台管理键不透传：task_id/execution_id 一律清除（claim 时由平台注入，协议 §2.3），
 // instance_ref 由平台覆盖为 strconv 格式的实例 id（day31 裁决：与 task_id v1.0.5 字符串口径一致）。
@@ -183,7 +180,7 @@ func (s *Service) Create(scenarioKey string, instanceID int64, paramsOverride ma
 		InstanceID:     instanceID,
 		CreatedBy:      int64(user.ID), // sys_user.id 为 M0 遗留 uint；表 19 created_by=bigint（int64），显式转换
 		ParamsSnapshot: snapshot,
-		Status:         TaskStatusPENDING,
+		Status:         string(StatePending),
 	}
 	if err := s.repo.Create(task); err != nil {
 		return nil, fmt.Errorf("create test_task: %w", err)
