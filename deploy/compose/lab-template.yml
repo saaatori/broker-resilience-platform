@@ -96,9 +96,10 @@ services:
     restart: "no"
     command: ["python", "/app/lab/helpers/recorder.py", "--jsonl-path", "/data/records.jsonl"]
     # 就绪信号（day20 评审 I-1）：factory up 等本服务 healthy 后才返回，
-    # 防 producer 早到的 SEND/CONFIRM POST 触发 10 连 miss 熔断（静默丢事件）
+    # 防 producer 早到的 SEND/CONFIRM POST 触发 10 连 miss 熔断（静默丢事件）。
+    # 探针必须读响应并要求 200：只 request 不 getresponse 等于端口探活（旧写法实测——GET 当时实得 501 仍为绿）
     healthcheck:
-      test: ["CMD", "python", "-c", "import http.client; http.client.HTTPConnection('127.0.0.1', 8080, timeout=1).request('GET', '/healthz')"]
+      test: ["CMD", "python", "-c", "import http.client, sys; conn = http.client.HTTPConnection('127.0.0.1', 8080, timeout=1); conn.request('GET', '/healthz'); sys.exit(0 if conn.getresponse().status == 200 else 1)"]
       interval: 2s
       timeout: 3s
       retries: 15

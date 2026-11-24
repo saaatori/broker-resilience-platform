@@ -215,3 +215,27 @@ def test_concurrent_same_id_posts_append_dup_per_repeat(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_healthz_reports_ready(tmp_path):
+    """就绪探针端点（模板 healthcheck 用）：GET /healthz → 200 {"status": "ok"}；其余 GET 路径 404。
+
+    此前只实现了 POST /records，healthcheck 的 GET /healthz 实得 501——探针靠"只发不读"才绿。
+    """
+    rec, server = start_server(tmp_path)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        with urllib.request.urlopen(base + "/healthz", timeout=5) as resp:
+            assert resp.status == 200
+            assert json.loads(resp.read().decode("utf-8")) == {"status": "ok"}
+
+        try:
+            urllib.request.urlopen(base + "/nope", timeout=5)
+            status = 200
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        assert status == 404
+    finally:
+        server.shutdown()
+        server.server_close()

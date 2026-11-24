@@ -9,7 +9,8 @@ database:
   dsn: "host=localhost port=5432 user=brp password=CHANGE_ME dbname=broker_resilience sslmode=disable TimeZone=Asia/Shanghai"
 
 auth:
-  # 种子管理员：首次启动且库中无用户时写入；两项留空则回退 admin / admin123
+  # 种子管理员：仅库中无用户时写入一次（对存量库不生效，已有用户不会改密）；用户名留空回退 admin；
+  # 密码必填——空或占位值 CHANGE_ME 拒绝启动（不设默认口令）
   seed_username: "admin"
   seed_password: "CHANGE_ME"
   # JWT：密钥必填（本地随机串，openssl rand -hex 32 生成）；TTL 为 Go duration 格式，留空默认 24h
@@ -19,3 +20,9 @@ auth:
 instance:
   # 实例凭据 Fernet 密钥，必填（python -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"）
   encrypt_key: "CHANGE_ME"
+
+redis:
+  # 必填：addr 为空拒绝启动（心跳缓存、事件幂等去重、清理队列都走 Redis）
+  # 本机填 localhost:6379；密码取 deploy/env/.env 里的 REDIS_PASSWORD
+  addr: "localhost:6379"
+  password: "CHANGE_ME"

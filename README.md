@@ -53,7 +53,8 @@ task dev:frontend # 启动前端（Vite）
 - 分支模型：`main`（可演示）+ `dev`（日常开发），里程碑节点合并打 tag；
 - 提交信息：约定式格式 `feat/fix/test/chore(scope): 描述`；
 - 换行符：仓库统一 LF（见 `.gitattributes`）；
-- 代码检查：`task lint`（golangci-lint / ruff / ESLint）。
+- 代码检查：`task lint`（golangci-lint / ruff / ESLint）；
+- 单元测试：`task test`——Go（`backend`）+ Agent（`agent`）+ lab 宿主套件（仓库根 `pytest.ini`）三套件；Python 套件经 `uv` 走 `agent` 项目环境，不依赖终端是否激活了 venv。Go 集成测试需要真 PostgreSQL 与 Redis：设置 `BRP_TEST_DSN`（未设置则跳过——只跑单测）。
 
 ## 路线图
 

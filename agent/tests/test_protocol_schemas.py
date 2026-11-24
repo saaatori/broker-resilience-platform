@@ -7,10 +7,8 @@ metric 枚举=metrics.METRIC_NAMES、params 样例值=params.default.json、subs
 import json
 from pathlib import Path
 
-import pytest
-from jsonschema import Draft202012Validator, FormatChecker
-
 from agent.reconcile.metrics import METRIC_NAMES
+from jsonschema import Draft202012Validator, FormatChecker
 
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / "docs" / "protocol" / "schema"
 SAMPLES = SCHEMA_DIR / "samples"

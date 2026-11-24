@@ -58,6 +58,9 @@ func (s *Service) Login(username, password string) (string, error) {
 	return s.issueToken(username)
 }
 
+// ErrSeedPasswordEmpty 种子管理员密码未配置。不设默认口令——空值回退等于默认口令上线（main 启动期同口径 fail-fast）。
+var ErrSeedPasswordEmpty = errors.New("seed admin password is empty")
+
 // HashPassword 生成 bcrypt 哈希（DefaultCost=10，本地开发与演示场景够用）。
 func (s *Service) HashPassword(plain string) (string, error) {
 	hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
@@ -68,14 +71,15 @@ func (s *Service) HashPassword(plain string) (string, error) {
 }
 
 // SeedAdmin 启动时调用：库中无任何用户则写入种子管理员，已有用户则跳过（幂等，可安全重启）。
-// username/password 为空时回退默认值 admin / admin123（仅限本地开发，配置中显式填写可覆盖）。
+// username 空则回退 admin；password 必填——空值返回 ErrSeedPasswordEmpty（无默认口令）。
 func (s *Service) SeedAdmin(username, password string) error {
 	count, err := s.repo.Count()
 	if err != nil {
 		return fmt.Errorf("count sys_user: %w", err)
 	}
 	if count > 0 {
-		log.Printf("auth: 已有 %d 个用户，跳过种子管理员", count)
+		// 存量库：种子口令（含配置里的新口令）对已有用户一律不生效——明示，免得以为改了配置就换了口令
+		log.Printf("auth: 已有 %d 个用户，跳过种子管理员（配置的种子口令对存量用户不生效，口令以库中为准）", count)
 		return nil
 	}
 
@@ -83,8 +87,7 @@ func (s *Service) SeedAdmin(username, password string) error {
 		username = "admin"
 	}
 	if password == "" {
-		password = "admin123"
-		log.Print("auth: 未配置种子管理员密码，回退默认 admin123（仅限本地开发）")
+		return ErrSeedPasswordEmpty
 	}
 
 	hash, err := s.HashPassword(password)

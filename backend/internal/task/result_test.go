@@ -207,3 +207,28 @@ func TestResult(t *testing.T) {
 		}
 	})
 }
+
+// TestSummaryMetricsStoredScale 量纲钉子（代码走查 #2）：率类指标原始值域 [0,1]（metrics.py 契约），
+// 表 23 单位为 %——入库须换算为百分数值，使 value 与 unit 自洽（1.0 存成 100 而不是 1.0）。
+// 时长类原值入库；null 指标不落行。
+func TestSummaryMetricsStoredScale(t *testing.T) {
+	summary := []byte(`{"sent":10000,"processed_rate":1.0,"dup_rate":0.0,"loss_rate":0.9999,` +
+		`"avg_delivery_latency_s":3.2,"recovery_time_s":null,"verdict":"PASS","details":[]}`)
+	got := summaryMetrics(summary)
+	want := map[string]float64{
+		"processed_rate": 100, "dup_rate": 0, "loss_rate": 99.99, "avg_delivery_latency_s": 3.2,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("应落 %d 个指标（recovery_time_s=null 跳过），实际 %d: %v", len(want), len(got), got)
+	}
+	for key, w := range want {
+		if diff := got[key] - w; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("%s: want %v got %v", key, w, got[key])
+		}
+	}
+	for _, rate := range []string{"processed_rate", "dup_rate", "loss_rate"} {
+		if metricUnits[rate] != "%" {
+			t.Errorf("率类 %s 单位应为 %%", rate)
+		}
+	}
+}

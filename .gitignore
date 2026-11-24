@@ -30,6 +30,8 @@ params.json
 # data/ 为本地数据卷
 data/
 *.jsonl
+# 例外：测试夹具必须入库（对账单测的 JSONL 样本——通配符误伤会让新克隆缺夹具）
+!agent/tests/fixtures/*.jsonl
 *.zip
 
 # ===== 环境与密钥（模板 .example 可提交）=====

@@ -102,6 +102,13 @@ class Recorder:
 class _RecordHandler(BaseHTTPRequestHandler):
     recorder: Recorder  # 由 make_server 注入
 
+    def do_GET(self):
+        # 就绪探针（模板 healthcheck）：只认 /healthz——走到这里即说明 HTTP 服务已在处理请求
+        if self.path != "/healthz":
+            self._send(404, {"error": "not found"})
+            return
+        self._send(200, {"status": "ok"})
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length)  # 先消费 body（含 404 分支：为将来 keep-alive 留路）

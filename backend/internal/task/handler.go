@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/saaatori/broker-resilience-platform/backend/internal/httpserver"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
@@ -52,6 +53,7 @@ func (h *Handler) create(c *gin.Context) {
 	case errors.Is(err, ErrInvalidParams):
 		// 哨兵前缀剥掉后即 schema 违规摘要（计划要求 400 附摘要：调用方看得见违规点，排障不必翻服务日志）
 		detail := strings.TrimPrefix(err.Error(), ErrInvalidParams.Error()+": ")
+		detail = scrubSchemaURL(detail) // v6 错误首行含构建机路径，剥离（同 events 端点）
 		log.Printf("task: 参数快照校验失败: %s", detail)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数快照不合法（对照 params_snapshot schema）", "detail": detail})
 	case errors.Is(err, ErrUserNotFound):
@@ -97,7 +99,7 @@ func (h *Handler) postResult(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体为空或读取失败"})
 		return
 	}
-	if len(raw) > maxResultBodyBytes { // 独立上限：reconciliation 差集数组可达千条（M3 大丢失场景），64KB 会误杀（day35 评审 I-4）
+	if int64(len(raw)) > maxResultBodyBytes { // 独立上限：reconciliation 差集数组可达千条（M3 大丢失场景），64KB 会误杀（day35 评审 I-4）
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体过大（result 上限 4MB）"})
 		return
 	}
@@ -118,8 +120,9 @@ func (h *Handler) postResult(c *gin.Context) {
 // maxEventBodyBytes 单条事件体上限（日志型 payload 的输入卫生；协议未定，防御值记档）。
 const maxEventBodyBytes = 64 << 10
 
-// maxResultBodyBytes 结果体独立上限（差集证据数组 M3 可达千条；记档：M3 观察实际体量再议协议级上限）。
-const maxResultBodyBytes = 4 << 20
+// maxResultBodyBytes 结果体上限=平台通用上限（middleware.MaxBodyBytes，单一来源）：差集证据数组 M3 可达千条；
+// 记档：M3 观察实际体量再议是否单独放宽（届时需同步 nginx client_max_body_size）。
+const maxResultBodyBytes = middleware.MaxBodyBytes
 
 // postEvent POST /api/v1/executions/:eid/events（X-Agent-Token）：事件上报（§2.4）。
 // 成功与重复均为 202 空体；404 归属；400 schema/ts；500 闸门故障（Redis 不可用不降级）。
@@ -192,6 +195,10 @@ func (h *Handler) streamTaskEvents(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no") // nginx 不缓冲（compose 反代链路）
+	// 解除本连接的写超时：SSE 是长连接，否则会在全局 WriteTimeout（60s）到点后被掐断
+	if err := httpserver.StreamNoWriteDeadline(c.Writer); err != nil {
+		log.Printf("task: SSE 解除写超时失败（流将在写超时后中断）: %v", err)
+	}
 	keepalive := time.NewTicker(15 * time.Second)
 	defer keepalive.Stop()
 

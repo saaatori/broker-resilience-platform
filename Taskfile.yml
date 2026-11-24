@@ -35,6 +35,7 @@ tasks:
     cmds:
       - task: test:backend
       - task: test:agent
+      - task: test:lab
 
   test:backend:
     desc: Go 单元测试
@@ -46,7 +47,14 @@ tasks:
     desc: Agent 单元测试
     dir: agent
     cmds:
-      - pytest tests
+      # uv run 走项目环境（.venv：docker/pyyaml/pytest/jsonschema）——裸 pytest 在未激活 venv 的终端会解析到
+      # 全局 Python 而缺 docker 包（双 Python 并存，排障手册 #5 同族）
+      - uv run pytest tests
+
+  test:lab:
+    desc: lab 宿主单测（仓库根 pytest.ini 收 lab/tests；复用 agent 项目环境，pika 为延迟导入无需安装）
+    cmds:
+      - uv run --project agent pytest
 
   lint:
     desc: 代码检查（golangci-lint / ruff / eslint）

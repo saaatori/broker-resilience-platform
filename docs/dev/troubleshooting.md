@@ -284,3 +284,79 @@
 **原因**：Windows 无内置 python3 别名——`python3` 命中 Microsoft Store 的 App Execution Alias stub，无参数/管道输入时直接静默退出（exit 0），不执行任何代码。此前所有 heredoc 补丁都用 `python`，误敲一次 `python3` 即触发。
 
 **解决**：本机一律用 `python`（独立安装 3.13）。防再犯：heredoc 补丁脚本必须带一行 `print("patched")` 尾输出——输出缺失即说明脚本根本没执行（早于文件级 assert 发现问题）。
+
+## 忽略规则与测试资产
+
+### 34. .gitignore 通配符误伤测试夹具：本机全绿、新克隆缺文件（2026-11-24）
+
+**现象**：本机 agent 套件全绿；把 `HEAD` 导出成全新克隆再跑，`test_fixture_file_counts` 报 `FileNotFoundError: …agent/tests/fixtures/reconcile_sample.jsonl`。
+
+**原因**：`*.jsonl` 本意忽略运行产物（`/work/` 下的 JSONL），但对账单测的夹具同后缀，一并被忽略——文件只存在于开发机，从未入库。#16 的教训当时只验证了"该忽略的被忽略"，没验证"不该忽略的没被误伤"。
+
+**解决**：通配符之后加否定规则 `!agent/tests/fixtures/*.jsonl`；用 `git ls-files --others --exclude-standard` 确认夹具出现在未跟踪列表（`git check-ignore -v` 应命中否定规则）。"新克隆会怎样"不要靠想象：`git archive HEAD | tar -x -C <临时目录>` 实跑一遍。教训：**每加一条通配忽略规则都要双向核对**——产物被忽略，夹具/样例未被误伤。
+
+## 容器探针
+
+### 35. healthcheck 只发请求不读响应＝端口探活，假绿（2026-11-24）
+
+**现象**：recorder 的 healthcheck 恒为 healthy，但 recorder 只实现了 `POST /records`——`GET /healthz` 实际返回 501。
+
+**原因**：探针是 `http.client.HTTPConnection(...).request('GET', '/healthz')`，只调 `request()` 不调 `getresponse()`；进程退出码只取决于"连得上、发得出"，端口通即绿，服务端怎么答根本没看。
+
+**解决**：实现 `GET /healthz`；探针改 `sys.exit(0 if conn.getresponse().status == 200 else 1)`。验证用三组对照：新代码+新探针=healthy；旧代码+新探针=连续 exit 1；旧代码+**旧探针**=healthy（假绿实证）。教训：**探针必须断言响应**（状态码或响应体），"只发不读"的 healthcheck 没有证明力。
+
+## 验证脚本
+
+### 36. 子进程 stdout 接了管道却不读：写满后子进程被阻塞（2026-11-24）
+
+**现象**：验证脚本里服务"起不来"（healthz 永远不通），手工单独跑同一个二进制却完全正常。
+
+**原因**：`subprocess.Popen(stdout=PIPE)` 之后没人读管道；启动迁移期日志量大，管道缓冲写满后子进程阻塞在 `write` 上，永远走不到监听。
+
+**解决**：子进程输出落文件（`stdout=open(log, "w", encoding="utf-8")`），或起线程持续读管道。"手工能跑、脚本不行"先怀疑编排，而不是被测程序。
+
+### 37. httptest.Server 自定义超时的正确写法（2026-11-24）
+
+**现象**：`s := &httptest.Server{Config: srv}; s.Start()` 后 `s.URL` 是空的，请求报 `unsupported protocol scheme ""`。
+
+**原因**：零值构造的 `httptest.Server` 没带监听器，不是文档支持的用法。
+
+**解决**：走文档写法 `ts := httptest.NewUnstartedServer(handler)` → 改 `ts.Config` 的超时字段 → `ts.Start()`。要测真实构造器的字段映射，就把构造器返回值的各字段赋给 `ts.Config`。
+
+### 38. 服务端提前拒绝超大请求时，客户端可能先看到"连接被中止"而非 413（2026-11-24）
+
+**现象**：5MB 请求体触发上限后，Python urllib 抛 `ConnectionAbortedError`（WinError 10053），读不到 413 报文；同样的请求 curl 得到 413。
+
+**原因**：服务端见 `Content-Length` 超限即回 413 并关闭连接（刻意不读完任意大体积的 body），此时客户端还在上传，连接复位先于它读到响应。
+
+**解决**：这是拒绝生效的正常表现。验证"是否被拒"要看副作用（如任务数未增加），并用另一类客户端复测；不要因为一个客户端抛的是异常就判定上限没生效，也不要为了给客户端一个干净报文而把超限 body 读完。
+
+## 测试命令与环境
+
+### 39. 任务里的裸 pytest 解析到全局 Python（2026-11-24）
+
+**现象**：`task test` 在 agent 套件收集阶段就失败：`tests/test_lab_factory.py` 里 `from docker.errors import NotFound` 报错；而 `uv run pytest` 正常。
+
+**原因**：`test:agent` 用的是裸 `pytest`，在没激活 venv 的终端里命中全局 Python 的 pytest（#5 双 Python 并存的同族问题，缺 `docker` 包）。一直没发现，是因为日常只跑 `test:backend`，或在已激活 venv 的终端里跑。
+
+**解决**：任务改 `uv run pytest tests`（走项目环境）；新增的 lab 任务同口径 `uv run --project agent pytest`。教训：**进任务文件和 CI 的命令不能依赖"终端恰好激活了哪个环境"**——写完任务换一个干净终端跑一遍。
+
+### 40. 抄上一行断言忘了翻转条件（2026-11-24）
+
+**现象**：限流器"窗口过期后应解除"用例失败；把变量值打出来，实现却完全正确。
+
+**原因**：前一行"前置：应处于限流"写的是 `if !blocked { Fatal }`，被原样抄到期望恰好相反的下一行。
+
+**解决**：先把关键值打出来，确认实现在做什么，再回头审断言——这次 30 秒的打印省下了对正确实现的"修复"。相邻两条断言期望相反时，条件必须显式翻转。
+
+## 并发与事务（续）
+
+### 41. 限流器"判定"与"记账"分两步：并发可整体绕过（2026-11-24）
+
+**现象**：登录限流的串行测试全对（5 次错密后第 6 次 429）；但 40 个并发错密得到 401×40、429×0——上限明明是 5。
+
+**原因**：处理器先调 `blocked()` 判定，校验完口令才调 `recordFailure()` 记失败。并发请求在任何人记下失败之前就全部通过了判定。与 #25（注册先查后插）是同一个错误：把"检查"和"动作"分成两步，中间留着窗口。写的时候明知 #25，还是写了。
+
+**解决**：把"判定 + 预占额度"合成一次加锁内的原子操作（`admit`），口令校验完再结算（`settle`）；在途（已预占、未结算）的尝试本身占额度。第一次改完并发测试仍是红的——拒绝条件只算了已失败数，漏了在途数（注释写了、代码没写），单元测试和并发测试同时抓到。
+
+教训：①**凡是"计数 / 限额 / 幂等"逻辑，写完先写并发测试**，不要只靠串行用例；②给假仓库加一点查询延迟，把竞态窗口拉宽，让它在测试里确定性地暴露，而不是靠时序运气；③注释不是实现——改完以测试为准，不以"我觉得写对了"为准。

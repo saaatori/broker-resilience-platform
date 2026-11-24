@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 
 	"gorm.io/gorm"
 
@@ -70,10 +71,21 @@ func exitReasonOf(resultStatus string) string {
 	return ""
 }
 
-// metricUnits 五指标单位映射（表 23：%/s）。
+// metricUnits 五指标单位映射（表 23：率类 %、时长 s）。
+// 率类原始值域 [0,1]（metrics.py 契约）——入库经 toStoredValue 换算为百分数值，value 与 unit 才自洽
+// （否则 1.0 配 "%" 会被读成 1%）。注意口径分叉：test_result.metrics 的 jsonb（含 details 的 value/actual）
+// 保持原始 [0,1]，只有 test_metric_summary 是百分数——读数时看表，别跨表直接比。
 var metricUnits = map[string]string{
 	"processed_rate": "%", "dup_rate": "%", "loss_rate": "%",
 	"avg_delivery_latency_s": "s", "recovery_time_s": "s",
+}
+
+// toStoredValue 指标值换算为存储口径：率类 ×100（保留 4 位小数，消除二进制浮点尾差），其余原值。
+func toStoredValue(key string, v float64) float64 {
+	if metricUnits[key] == "%" {
+		return math.Round(v*1e6) / 1e4
+	}
+	return v
 }
 
 // summaryVerdict 从 summary 提取 verdict（test_result.verdict，表 22）。
@@ -85,8 +97,9 @@ func summaryVerdict(summary json.RawMessage) string {
 	return s.Verdict
 }
 
-// summaryMetrics 提取五指标数值。宽松解码 map[string]any（summary 含 verdict/details 等非数值键，
-// 严格 map[string]json.Number 会整包失败）——逐键 float64 断言；null/缺失自然跳过（null=场景不适用）。
+// summaryMetrics 提取五指标的**存储口径**数值（率类已换算百分数）。宽松解码 map[string]any（summary 含
+// verdict/details 等非数值键，严格 map[string]json.Number 会整包失败）——逐键 float64 断言；
+// null/缺失自然跳过（null=场景不适用）。
 func summaryMetrics(summary json.RawMessage) map[string]float64 {
 	var m map[string]any
 	if err := json.Unmarshal(summary, &m); err != nil {
@@ -95,7 +108,7 @@ func summaryMetrics(summary json.RawMessage) map[string]float64 {
 	out := make(map[string]float64, len(metricUnits))
 	for key := range metricUnits {
 		if f, ok := m[key].(float64); ok {
-			out[key] = f
+			out[key] = toStoredValue(key, f)
 		}
 	}
 	return out

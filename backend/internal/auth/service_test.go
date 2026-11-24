@@ -19,8 +19,9 @@ import (
 // 测试因此不依赖数据库与容器。
 type fakeRepo struct {
 	users       map[string]*model.SysUser
-	createCalls int   // 记录 Create 调用次数：map 覆盖语义与真库 uniqueIndex 报错语义不同，幂等断言靠它兜住
-	findErr     error // 非 nil 时 FindByUsername 直接返回它（注入 DB 故障）
+	createCalls int           // 记录 Create 调用次数：map 覆盖语义与真库 uniqueIndex 报错语义不同，幂等断言靠它兜住
+	findErr     error         // 非 nil 时 FindByUsername 直接返回它（注入 DB 故障）
+	findDelay   time.Duration // >0 时 FindByUsername 先睡这么久（拉宽竞态窗口，并发回归测试用）
 }
 
 // newFakeRepo 预置一个 admin 用户；哈希用 MinCost 换速度（Login 的比对逻辑与 cost 无关）。
@@ -43,6 +44,9 @@ func (f *fakeRepo) Create(u *model.SysUser) error {
 }
 
 func (f *fakeRepo) FindByUsername(username string) (*model.SysUser, error) {
+	if f.findDelay > 0 {
+		time.Sleep(f.findDelay)
+	}
 	if f.findErr != nil {
 		return nil, f.findErr
 	}
@@ -153,6 +157,29 @@ func TestSeedAdmin(t *testing.T) {
 		// 预置管理员的密码未被覆盖（若守卫丢失，"another" 会覆盖重建，此处比对即失败）
 		if err := bcrypt.CompareHashAndPassword([]byte(repo.users["admin"].PasswordHash), []byte("admin123")); err != nil {
 			t.Fatal("预置管理员密码被覆盖，幂等守卫失效")
+		}
+	})
+
+	t.Run("空密码拒绝种子——无默认口令", func(t *testing.T) {
+		// 回归钉子：此前空密码静默回退 admin123，容器未注入时等于默认口令上线
+		repo := &fakeRepo{users: map[string]*model.SysUser{}}
+		svc := NewService(repo, cfg)
+		if err := svc.SeedAdmin("admin", ""); !errors.Is(err, ErrSeedPasswordEmpty) {
+			t.Fatalf("空密码应返回 ErrSeedPasswordEmpty，实际 %v", err)
+		}
+		if n, _ := repo.Count(); n != 0 {
+			t.Fatalf("拒绝时不得写入任何用户，实际 %d", n)
+		}
+	})
+
+	t.Run("空用户名回退 admin", func(t *testing.T) {
+		repo := &fakeRepo{users: map[string]*model.SysUser{}}
+		svc := NewService(repo, cfg)
+		if err := svc.SeedAdmin("", "s3cret"); err != nil {
+			t.Fatalf("SeedAdmin 出错: %v", err)
+		}
+		if _, ok := repo.users["admin"]; !ok {
+			t.Fatal("空用户名应回退 admin")
 		}
 	})
 }

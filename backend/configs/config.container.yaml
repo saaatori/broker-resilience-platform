@@ -8,9 +8,16 @@ database:
 
 auth:
   seed_username: "admin"
+  # 必填：容器必须经 BRP_AUTH_SEED_PASSWORD 注入（compose 从 deploy/env/.env 读取），否则 fail-fast 拒绝启动——
+  # 不设默认口令，未注入时 admin/admin123 不会静默上线
   seed_password: ""
   jwt_secret: "CHANGE_ME" # 容器必须经 BRP_AUTH_JWT_SECRET 注入，否则 fail-fast 拒绝启动
   token_ttl: "24h"
 
 instance:
   encrypt_key: "CHANGE_ME" # 同上，经 BRP_INSTANCE_ENCRYPT_KEY 注入
+
+redis:
+  # 经 BRP_REDIS_ADDR / BRP_REDIS_PASSWORD 注入（compose：redis:6379）；addr 为空拒绝启动
+  addr: ""
+  password: ""

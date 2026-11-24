@@ -16,6 +16,7 @@ import (
 	"github.com/fernet/fernet-go"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/auth"
+	"github.com/saaatori/broker-resilience-platform/backend/internal/httpserver"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/instance"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
@@ -32,7 +33,7 @@ type Config struct {
 	} `yaml:"database"`
 	Auth struct {
 		SeedUsername string `yaml:"seed_username"` // 种子管理员用户名，空则回退 admin
-		SeedPassword string `yaml:"seed_password"` // 种子管理员密码，空则回退 admin123
+		SeedPassword string `yaml:"seed_password"` // 种子管理员密码，必填（空/占位拒绝启动——无默认口令）
 		JWTSecret    string `yaml:"jwt_secret"`    // HS256 签名密钥，必填
 		TokenTTL     string `yaml:"token_ttl"`     // 令牌有效期（Go duration 格式），空则 24h
 	} `yaml:"auth"`
@@ -119,6 +120,18 @@ func main() {
 		}
 	}
 
+	// 种子管理员密码（fail-fast，与 jwt_secret 同口径）：空/模板占位均拒绝启动——不设默认口令，
+	// 未注入时宁可起不来，也不让 admin/admin123 静默上线。
+	if cfg.Auth.SeedPassword == "" || cfg.Auth.SeedPassword == "CHANGE_ME" {
+		log.Fatalf("config.yaml 缺少 auth.seed_password 或仍为模板占位值 CHANGE_ME（容器经 BRP_AUTH_SEED_PASSWORD 注入）")
+	}
+
+	// Redis 配置（M2 第 33 天）：缓存类键（表 26 agent:hb 等）。addr 属配置项——校验先于连库，
+	// 配置错误不被数据库错误掩盖；连接失败同样 fail-fast（运行期故障才由调用侧告警降级）。
+	if cfg.Redis.Addr == "" {
+		log.Fatalf("config.yaml 缺少 redis.addr（本机 localhost:6379；容器 redis:6379）")
+	}
+
 	// 实例凭据加密密钥（fail-fast，与 jwt_secret 同口径）：空/占位/非法 base64 均拒绝启动。
 	if cfg.Instance.EncryptKey == "" || cfg.Instance.EncryptKey == "CHANGE_ME" {
 		log.Fatalf("config.yaml 缺少 instance.encrypt_key（本地生成：python -c \"import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"）")
@@ -133,11 +146,6 @@ func main() {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
 
-	// Redis（M2 第 33 天）：缓存类键（表 26 agent:hb 等）；fail-fast 与 PG 同口径——
-	// 配置错启动期暴露，运行期故障由调用侧告警降级（租约本体在 PG，不阻断心跳）。
-	if cfg.Redis.Addr == "" {
-		log.Fatalf("config.yaml 缺少 redis.addr（本机 localhost:6379；容器 redis:6379）")
-	}
 	rdb, err := storage.OpenRedis(cfg.Redis.Addr, cfg.Redis.Password)
 	if err != nil {
 		log.Fatalf("连接 Redis 失败: %v", err)
@@ -154,6 +162,7 @@ func main() {
 	}
 
 	r := gin.Default()
+	r.Use(middleware.BodyLimit(middleware.MaxBodyBytes)) // 通用请求体上限（各端点更严的上限在 handler 内）
 
 	authHandler := auth.NewHandler(authSvc)
 	apiV1 := r.Group("/api/v1")
@@ -224,7 +233,8 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Printf("BRP 控制面启动于 %s", addr)
-	if err := r.Run(addr); err != nil {
+	// 不用 gin 的 r.Run（零超时）：读写/空闲超时口径见 internal/httpserver
+	if err := httpserver.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("服务启动失败: %v", err)
 	}
 }

@@ -52,6 +52,9 @@ services:
       BRP_DATABASE_DSN: "host=postgres port=5432 user=${POSTGRES_USER} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB} sslmode=disable TimeZone=Asia/Shanghai"
       BRP_AUTH_JWT_SECRET: ${BRP_AUTH_JWT_SECRET}
       BRP_INSTANCE_ENCRYPT_KEY: ${BRP_INSTANCE_ENCRYPT_KEY}
+      # 种子管理员口令：无默认值——未在 .env 配置时为空，go 启动 fail-fast 拒绝（不静默回退默认口令）
+      BRP_AUTH_SEED_USERNAME: ${BRP_AUTH_SEED_USERNAME:-admin}
+      BRP_AUTH_SEED_PASSWORD: ${BRP_AUTH_SEED_PASSWORD}
       # Redis（第 33 天）：缓存类键（agent:hb 等），容器网内服务名直连
       BRP_REDIS_ADDR: "redis:6379"
       BRP_REDIS_PASSWORD: ${REDIS_PASSWORD}
