@@ -1,0 +1,60 @@
+{
+  "attempt": 1,
+  "status": "FAILED",
+  "failure": {
+    "reason": "timeout",
+    "message": "pytest exceeded total timeout 300s: SIGTERM sent, SIGKILL after 5s (exit=-9)"
+  },
+  "summary": {
+    "sent": 4000,
+    "confirmed": 4000,
+    "delivered": 3000,
+    "processed_unique": 3000,
+    "acked": 3000,
+    "dup_business": 0,
+    "processed_rate": 0.75,
+    "dup_rate": 0.0,
+    "loss_rate": 0.25,
+    "avg_delivery_latency_s": 3.1,
+    "recovery_time_s": null,
+    "verdict": "FAIL",
+    "details": [
+      {
+        "metric": "processed_rate",
+        "op": ">=",
+        "value": 1.0,
+        "actual": 0.75,
+        "passed": false
+      },
+      {
+        "metric": "dup_rate",
+        "op": "<=",
+        "value": 0.0,
+        "actual": 0.0,
+        "passed": true
+      },
+      {
+        "metric": "loss_rate",
+        "op": "<=",
+        "value": 0.0,
+        "actual": 0.25,
+        "passed": false
+      }
+    ]
+  },
+  "reconciliation": {
+    "dup_business_ids": [],
+    "sent_not_confirmed": [],
+    "confirmed_not_delivered": [
+      "m-3001",
+      "m-3002",
+      "m-3003"
+    ],
+    "delivered_not_processed": [],
+    "processed_not_acked": [],
+    "total_events": 17002
+  },
+  "artifacts": [
+    "task7/records.jsonl.zip"
+  ]
+}

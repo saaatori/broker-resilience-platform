@@ -1,13 +1,16 @@
-# BRP Agent Protocol v1.0（冻结）
+# BRP Agent Protocol v1.1（冻结）
 
 > Go 控制面 ↔ Python Agent 通信协议。**v1.0 冻结于 2026-11-19（M1 第 27 天）；v1.0.1 同日补丁（wire 要素补全，见文末变更日志）**。
-> 来源：实施规划 §4（执行基准）+ 总体设计表 5/表 6（已逐字核对一致）。
+> **当前版本 v1.1（2026-11-24）：`result` 增 `failure`（失败原因）与 `faults`（故障时间线），见 §2.5.1 / §2.5.2；其余端点与状态机不变。**
+> v1.1 的新增内容尚未写入总体设计，设计文档升版时同步：表 21 需补 `verified_at`、`recovery_status` 需允许为空（wire 允许 null）；表 22 需补 `failure` 列；表 5 / 表 6 停在 v1.0 口径。
+> 来源：实施规划 §4（执行基准）+ 总体设计表 5/表 6（v1.0 时逐字核对一致）。
 > 变更政策：冻结后任何变更须升次版本号（v1.0.x 补丁/v1.1+ 特性）并在文末变更日志记录；M2 实现以本文档为准，实现与文档冲突时先改文档（升版本）再改代码。
 > JSON Schema 三件（params_snapshot / events / result）以本文档结构为准生成，第 28 天入库 `docs/protocol/schema/`。
 
 ## 1. 通用约定
 
 - **Base URL**：`http://go:8080/api/v1`（生产，服务名解析）；内容类型一律 `application/json`。
+- **入口边界**：Agent 端点只在平台内网可达——Agent 容器直连 `go:8080`，nginx 对 `/api/v1/agent/` 与 `/api/v1/executions/` 一律返回 404、不转发。`register` 无鉴权，这些端点不得对外暴露（2026-11-24 起 nginx 屏蔽）。**仅 compose 形态受此保护**：`task dev:backend` 开发态下 Go 直接监听宿主机 :8080、Vite 代理全量转发 `/api`。面向前端的接口不要放进这两个前缀下，会被一并屏蔽。
 - **认证**：Agent 经 `/agent/register` 获取 `agent_token`，此后所有请求携带头 `X-Agent-Token: <token>`；token 无效 → 401。
 - **心跳与租约数值**（实施规划决策 3，固定不改）：心跳间隔 **15s**；租约 **45s**（45s 无心跳即判定过期）；**破坏性任务失联永不自动重跑**，只自动排队清理任务。
 - **幂等规则**（决策 4）：事件回传幂等键 `(execution_id, seq)`；结果回传幂等键 `(execution_id, attempt)`——Agent 网络重试安全，重复回传由 Go 侧去重。
@@ -62,10 +65,71 @@
 
 执行结果回传（终态）。
 
-- 请求：`{"attempt": int, "status": "COMPLETED" | "FAILED" | "CANCELLED", "summary": object, "reconciliation": object, "artifacts": [str, ...]}`
+- 请求：`{"attempt": int, "status": "COMPLETED" | "FAILED" | "CANCELLED", "failure"?: object, "faults"?: [object, ...], "summary": object, "reconciliation": object, "artifacts": [str, ...]}`（`failure` / `faults` 为 v1.1 新增的可选键，见 §2.5.1 / §2.5.2）
 - 响应 **200**（v1.0.1 定）；幂等键 `(eid, attempt)`（重复回传幂等落库，不重复生效）。
 - `summary` / `reconciliation` 的对象形状**已固化于 `docs/protocol/schema/result.schema.json`**（v1.0.2：键集=counter 六计数+metrics 五指标+verdict/details+差集证据，与 M1 实现 dict 键一致——校验测试钉防漂移）；`artifacts` 为**归档卷挂载点下的相对路径**列表（JSONL zip 等）——Agent 将文件置于共享归档卷（部署前提=实施规划决策 6 归档卷，v1.0.1 定），Go 侧按此路径登记 `test_report.file_path`。
 - 终态后重复/迟到 result：幂等落库、返回 200、不改状态（§4 兜底）。
+- **Go 侧对 v1.1 新增键的处理**：`failure` → `test_execution.exit_reason` 取 `failure.reason`（未携带则记 `error`），`failure` 原文存入新增的 jsonb 列 `test_result.failure`；`faults` → **当前仅校验不落库**（落库随 M3 第 53 天 `fault_injection` 表，在此之前携带了也查不到，Go 日志留痕）。
+- **收口归属**：执行记录的 `exit_reason` 与 `finished_at` 由 result 写入，**先经 STATUS 上报了终态子状态（如取消闭环里的 ABORTED）不影响这一步**。例外是执行已被租约清扫收口（`finished_at` 非空）：迟到的 result 照录进 `test_result`，但执行记录保持 `lease_lost` 不改写——失败归因不与用户取消、Agent 自述混淆。
+- **400 的来源**（Agent 侧不重试，须修正后重发）：schema 不符（含 `failure` 与 `status` 不配、`faults` 自洽规则）；`faults` 时间戳非 RFC3339 或先后颠倒；`attempt` 与执行轮次不符；请求体含 `\u0000` 或非法 UTF-8 字节（jsonb 列存不了，入口拦下而不是落库时 500）。
+
+#### 2.5.1 `failure`：失败原因（v1.1）
+
+`status=FAILED` 时**应当**携带，说明这一份结果为什么失败。此前 §4 表行 4 的动作"记录失败原因"没有承载字段，Go 只能一律记 `error`，超时与出错无法区分（第 39 天的超时强杀路径依赖这个区分）。
+
+```json
+"failure": { "reason": "timeout", "message": "pytest exceeded total timeout 300s: SIGTERM sent, SIGKILL after 5s (exit=-9)" }
+```
+
+| 键 | 取值 | 说明 |
+| --- | --- | --- |
+| `reason` | `timeout` / `error` | `timeout`=总超时或超时强杀；`error`=其余执行错误。直接写入 `test_execution.exit_reason`（总体设计表 20 的取值域）。新增取值须升协议版本 |
+| `message` | string，1～1024 字符 | 人读说明，超长由 Agent 截断 |
+
+规则：
+
+- **仅限 FAILED**：`status` 不是 `FAILED` 却带了 `failure`，schema 拒收（400）。
+- **FAILED 不带 `failure` 仍然合法**：Go 侧 `exit_reason` 兜底记 `error`，`test_result.failure` 为空。不因为缺原因把整份结果拒之门外——被拒的 FAILED 回传重试也不会成功，任务最终会被租约清扫错记成 `lease_lost`。
+- 样例：`docs/protocol/schema/samples/result_failed.sample.json`。
+
+#### 2.5.2 `faults`：故障时间线（v1.1）
+
+本次执行注入的故障记录，按注入先后排列；无故障的场景省略或给空数组。一次执行可有多条（对应总体设计表 13 的 1:n）。events 不入库，故障的实际起止时刻只能经这里传到 Go——M3 的故障审计（第 53 天 `fault_injection` 落库）以它为数据来源。
+
+```json
+"faults": [{
+  "strategy": "consumer_kill", "target": "brp_42_consumer",
+  "injected_at": "2026-11-24T10:00:10.500+00:00", "recovered_at": "2026-11-24T10:00:25.100+00:00",
+  "verified_at": "2026-11-24T10:00:33.400+00:00",
+  "status": "recovered", "recovery_status": "ok", "error": null
+}]
+```
+
+| 键 | 取值 | 说明 |
+| --- | --- | --- |
+| `strategy` | string（1～32） | 同 `params_snapshot.fault.strategy` |
+| `target` | string（1～255） | 目标资源：容器名或代理标识（总体设计表 21 `target`） |
+| `injected_at` | date-time / null | 实际注入生效时刻；注入未生效时为 null |
+| `recovered_at` | date-time / null | 实际解除时刻；回传时仍在生效则为 null |
+| `verified_at` | date-time / null | 恢复验证通过时刻；未验证或未通过则为 null |
+| `status` | `injected` / `recovered` / `failed` | `injected`=回传时仍在生效；`recovered`=已解除；`failed`=注入未生效。这是表 21 `status` 的 Agent 上报子集——`planned` 是注入前状态，不出现在结果里 |
+| `recovery_status` | `ok` / `recovery_failed` / `forced` / null | `ok`=恢复且验证通过；`recovery_failed`=恢复或验证未通过；`forced`=由兜底清理解除；未发生恢复步骤则为 null（表 21 `recovery_status`） |
+| `error` | string（≤1024）/ null | 异常信息 |
+
+规则：
+
+- 八个键**全部显式给出**，不适用的写 `null`（与 `summary` 的口径一致）；一次回传最多 32 条。
+- `status` / `recovery_status` 与时间戳须自洽，否则 schema 拒收。一句话：注入未生效就什么都没发生；仍在生效就是没解除、没验证；验证通过就必有验证时刻。具体四条：
+  - `failed` ⇒ `injected_at`、`recovered_at`、`verified_at`、`recovery_status` 均为 null；
+  - `injected` ⇒ `injected_at` 非空，`recovered_at`、`verified_at` 为 null，`recovery_status` 只能是 null（未尝试恢复）或 `recovery_failed`（尝试过但没解除掉）；
+  - `recovered` ⇒ `injected_at`、`recovered_at` 均非空；
+  - `recovery_status=ok` ⇒ `verified_at` 非空。
+- 时间先后 schema 表达不了，由 Go 后置校验：`recovered_at` 不早于 `injected_at`，`verified_at` 不早于 `recovered_at`。
+- 时间戳一律 RFC3339 带时区（同 events 的 `ts`，决策 11），**以 Go 侧为准**：`T` 与 `Z` 须大写。schema 的 `format: date-time` 在 Go 的校验器里默认不生效，由 Go 原生解析；Python 侧的格式校验较宽松（接受小写 `t` / `z`），Agent 自检通过不代表 Go 一定接受。
+- `faults` 校验不过会拒收整份结果（与其它 schema 错误同一出口）。第 53 天 Agent 接入时应在发送前自检，别让一条故障记录的格式问题连带丢掉对账证据。
+- 样例：`docs/protocol/schema/samples/result_fault.sample.json`。
+
+与指标的关系：当前 `recovery_time_s` = `recovered_at − injected_at`（`agent/reconcile/metrics.py`）；`verified_at − recovered_at` 对应总体设计表 23 定义的"故障恢复时间"（达到正常判据的时间减故障解除时间），M3 定指标口径时可直接取用。
 
 ### 2.6 `POST /executions/{eid}/cleanup-ack`
 
@@ -105,6 +169,8 @@
 | DISPATCHED | 收到 result(COMPLETED/FAILED)※※ | COMPLETED/FAILED | v1.0.4 扩展：Agent 在首条 STATUS 前崩溃恢复后直接回传的场景；动作同 RUNNING 对应行 |
 | CANCELLING | 收到 result(COMPLETED/FAILED)※※ | CANCELLED | v1.0.4 扩展：取消意图优先——result 照录但不改变取消终态；清理照常兜底 |
 | DISPATCHED / RUNNING / CANCELLING ※ | 租约过期（45s 无心跳） | FAILED | 标记 lease_lost；破坏性任务不自动重跑，仅排队清理任务 |
+
+表行 4 的"记录失败原因"：v1.1 起取自 `result.failure`（§2.5.1），写入 `test_execution.exit_reason` 与 `test_result.failure`。
 
 **取消闭环时序（v1.0.1 定，C-1）**——两个实现者的唯一读法：
 
@@ -169,3 +235,4 @@ cancel_requested（心跳响应下发）
 - **v1.0.3（2026-11-19，schema 评审补丁）**：①events schema 改**顶层 oneOf 三完整分支**（type const 绑定 payload 形状）——修复 v1.0.2 的 type↔payload 错配放行（评审实测 LOG+substate/STATUS+message 均曾通过）；②result.details.actual 收窄为 number|null（无 string 生产者）；③details.metric 收紧为五值枚举（与断言侧对称）；④samples 补 LOG/PROGRESS 两件；⑤**语法口径**：三件 schema 为 draft-07 与 2020-12 公共子集（无 $defs/$ref/prefixItems 等独有关键字）——Go 侧库选型不受 draft 限制。
 - **v1.0.4（2026-11-19，双视角走查修订）**：Go/Agent 双实现者 dry-run 走查出的八项歧义收口：①状态机扩展两行【※※】——DISPATCHED 收 result（Agent 首条 STATUS 前崩溃恢复场景）与 CANCELLING 收 result(COMPLETED/FAILED)（取消意图优先，result 照录不改终态）；②events seq 发端=严格递增不得重复；③events 乱序=接受并转发不重排（消费者按 seq 自行重排）；④events **存储语义护栏**：不入 PG（决策 6 同样适用本端点），幂等去重=Redis SETNX（表 26 键 `exec:evt:{eid}:{seq}`，TTL 10min），SSE 即时转发不持久化；⑤claim 的 **Agent 落盘合成式**成文（params.json = snapshot + 响应顶层 task_id/execution_id → /work/<eid>/）；⑥heartbeat **lease_ok 判定规则**成文（存在/归属/非终态/租约有效；CANCELLING→cancel_requested 互斥取消优先）；⑦cleanup-ack **非取消态语义**（仅 CANCELLING 有转移，其余记录不改态）。走查表见开发日志第 29 天。
 - **v1.0.5（2026-11-19，走查评审补丁——第三实现者沿 status 维度与取消触发面重走）**：①**用户取消 × 各状态**成文（PENDING=直接 CANCELLED；DISPATCHED=置标志+首条 STATUS 转 CANCELLING；取消入口在前端→Go，v1.0.4 双视角的结构性盲区）；②result(CANCELLED) 于非取消态=照录不改态、清扫收口（失败归因不混淆）；③CANCELLING 收 result(COMPLETED/FAILED) 照录细则（保留原 status/报告照常/幂等 first-wins）；④task_id 类型统一为 **str**（DB bigint 的字符串化——消除协议 int 与 schema string 的字段级矛盾）；⑤lease_ok 分支序补"租约失效一律不入两数组（含 CANCELLING）"；⑥events 去重窗口有界性（TTL 10min，窗口外重复可能重发；消费者按 seq 重排**并去重**）+ Redis 不可用=5xx 不降级 + **SSE 断线不回放**（任务状态查询兜底）；⑦三 `/executions/*` 端点限本 Agent 名下执行（否则 404）。**走查表↔本日志编号映射**：v1.0.4 日志①=走查卡壳⑥⑦（两行）、②=卡壳③、③=卡壳②、④=卡壳⑧、⑤=卡壳④、⑥=卡壳⑤、⑦=卡壳⑦。
+- **v1.1（2026-11-24，特性）**：`result` 请求体新增两个**可选**键，其余端点、状态机与既有键集均不变。①**`failure {reason, message}`**——失败原因，仅 `status=FAILED` 可携带（schema 条件约束，否则 400）；Go 侧 `test_execution.exit_reason` 取 `reason`（`timeout` / `error`，未携带兜底 `error`），原文存入 `test_result.failure`（新增 jsonb 列）。②**`faults []`**——故障时间线，八键显式（`strategy` / `target` / `injected_at` / `recovered_at` / `verified_at` / `status` / `recovery_status` / `error`），上限 32 条；`status` / `recovery_status` 与时间戳的四条自洽规则入 schema，时间先后由 Go 后置校验；**当前仅校验不落库**，落库随 M3 第 53 天 `fault_injection` 表。③新增样例 `result_failed` / `result_fault`；`summary` / `reconciliation` 的 round-trip 钉子不受影响。④回传体含 `\u0000` 或非法 UTF-8 字节 → 400（jsonb 列存不了，此前会在落库时 500；对既有键同样生效）。⑤非 wire 变更：§1 补"入口边界"（nginx 对 `/api/v1/agent/`、`/api/v1/executions/` 返回 404——`register` 无鉴权，此前经 :80 入口可冒充 Agent；仅 compose 形态，开发态不受保护）。⑥**修复既有逻辑**（评审发现）：执行记录的收口（`exit_reason` / `finished_at`）改按"是否已收口"判定。此前按"子状态非终态"判定，而 STATUS 事件会先把 DONE / ABORTED 写进执行状态——按 §4 取消时序（ABORTED → result(CANCELLED)）回传的结果收不了口，`exit_reason` 与 `finished_at` 丢失。**动机**：§4 表行 4"记录失败原因"此前无承载字段，超时与出错在 Go 侧无法区分（第 39 天超时强杀路径的前置）；故障的实际起止时刻只能经结果回传到达 Go（events 不入库，第 53 天故障审计的前置）。

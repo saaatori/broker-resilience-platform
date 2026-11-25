@@ -1,0 +1,68 @@
+{
+  "attempt": 1,
+  "status": "COMPLETED",
+  "faults": [
+    {
+      "strategy": "consumer_kill",
+      "target": "brp_42_consumer",
+      "injected_at": "2026-11-24T10:00:10.500+00:00",
+      "recovered_at": "2026-11-24T10:00:25.100+00:00",
+      "verified_at": "2026-11-24T10:00:33.400+00:00",
+      "status": "recovered",
+      "recovery_status": "ok",
+      "error": null
+    }
+  ],
+  "summary": {
+    "sent": 10000,
+    "confirmed": 10000,
+    "delivered": 10000,
+    "processed_unique": 10000,
+    "acked": 10000,
+    "dup_business": 3,
+    "processed_rate": 1.0,
+    "dup_rate": 0.00029991,
+    "loss_rate": 0.0,
+    "avg_delivery_latency_s": 9.8,
+    "recovery_time_s": 14.6,
+    "verdict": "FAIL",
+    "details": [
+      {
+        "metric": "processed_rate",
+        "op": ">=",
+        "value": 1.0,
+        "actual": 1.0,
+        "passed": true
+      },
+      {
+        "metric": "dup_rate",
+        "op": "<=",
+        "value": 0.0,
+        "actual": 0.00029991,
+        "passed": false
+      },
+      {
+        "metric": "loss_rate",
+        "op": "<=",
+        "value": 0.0,
+        "actual": 0.0,
+        "passed": true
+      }
+    ]
+  },
+  "reconciliation": {
+    "dup_business_ids": [
+      "m-1003",
+      "m-4520",
+      "m-7777"
+    ],
+    "sent_not_confirmed": [],
+    "confirmed_not_delivered": [],
+    "delivered_not_processed": [],
+    "processed_not_acked": [],
+    "total_events": 50038
+  },
+  "artifacts": [
+    "task42/records.jsonl.zip"
+  ]
+}

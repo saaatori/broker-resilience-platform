@@ -132,6 +132,115 @@ def test_result_negative_cases():
     assert validate(schema, bad)
 
 
+# ---------- 协议 v1.1：failure（失败原因）/ faults（故障时间线） ----------
+
+
+def valid_fault() -> dict:
+    """v1.1 最小合法故障记录：consumer_kill 已注入、已解除、验证通过。八键显式给出。"""
+    return {
+        "strategy": "consumer_kill", "target": "brp_42_consumer",
+        "injected_at": "2026-11-24T10:00:10.500+00:00",
+        "recovered_at": "2026-11-24T10:00:25.100+00:00",
+        "verified_at": "2026-11-24T10:00:33.000+00:00",
+        "status": "recovered", "recovery_status": "ok", "error": None,
+    }
+
+
+def test_result_v11_samples_pass():
+    schema = load("result")
+    for name in ("result_failed.sample.json", "result_fault.sample.json"):
+        assert validate(schema, load_sample(name)) == [], name
+
+
+def test_result_v11_failure_rules():
+    schema = load("result")
+    good = load_sample("result_failed.sample.json")
+    assert validate(schema, good) == []  # 基线：不带 failure 的 schema 会让下面的负例"因别的原因被拒"而假绿
+
+    def patched(**patch) -> dict:
+        doc = json.loads(json.dumps(good))
+        doc["failure"].update(patch)
+        return doc
+
+    assert validate(schema, patched(reason="crashed"))            # reason 枚举外
+    assert validate(schema, patched(message=""))                  # 空说明
+    assert validate(schema, patched(message="x" * 1025))          # 超长（上限 1024）
+    assert validate(schema, patched(stack="…"))                   # 未知键
+
+    doc = json.loads(json.dumps(good))
+    del doc["failure"]["message"]                                 # 缺必填
+    assert validate(schema, doc)
+
+    doc = json.loads(json.dumps(good))
+    doc["status"] = "COMPLETED"                                    # failure 仅限 FAILED
+    assert validate(schema, doc)
+
+    # FAILED 不带 failure 仍然合法：不因为缺原因把整份结果拒掉（Go 侧 exit_reason 兜底 error）
+    doc = json.loads(json.dumps(good))
+    del doc["failure"]
+    assert validate(schema, doc) == []
+
+
+def test_result_v11_fault_rules():
+    schema = load("result")
+    good = load_sample("result_fault.sample.json")
+    assert validate(schema, good) == []  # 基线（同上：负例须在"正例能过"的前提下才有判别力）
+
+    def with_fault(**patch) -> dict:
+        doc = json.loads(json.dumps(good))
+        doc["faults"] = [{**valid_fault(), **patch}]
+        return doc
+
+    # 三种终态各自的自洽形态都合法
+    still_injected = {"status": "injected", "recovered_at": None,
+                      "verified_at": None, "recovery_status": None}
+    assert validate(schema, with_fault(**still_injected)) == []
+    inject_failed = {"status": "failed", "injected_at": None, "recovered_at": None, "verified_at": None,
+                     "recovery_status": None, "error": "docker: no such container"}  # 注入未生效：什么都没发生过
+    assert validate(schema, with_fault(**inject_failed)) == []
+    forced = {"recovery_status": "forced", "verified_at": None,
+              "error": "recover timed out; forced cleanup"}
+    assert validate(schema, with_fault(**forced)) == []
+    no_faults = json.loads(json.dumps(good))
+    no_faults["faults"] = []                                       # 空数组=无故障
+    assert validate(schema, no_faults) == []
+
+    # 词汇
+    assert validate(schema, with_fault(status="planned"))          # status 枚举外
+    assert validate(schema, with_fault(recovery_status="maybe"))   # recovery_status 枚举外
+    # status 与时间戳须自洽
+    assert validate(schema, with_fault(recovered_at=None))         # recovered 须有解除时刻
+    assert validate(schema, with_fault(status="injected"))         # injected 须 recovered_at 为 null
+    assert validate(schema, with_fault(status="failed"))           # failed 须 injected_at 为 null
+    # 规则补全（2026-11-24 评审 I-2：下列自相矛盾的形态曾全部放行）
+    assert validate(schema, with_fault(status="failed", injected_at=None, recovery_status=None))    # failed 但有解除时刻
+    assert validate(schema, with_fault(status="failed", injected_at=None, recovered_at=None,
+                                        verified_at=None))                                          # failed 却 ok
+    assert validate(schema, with_fault(status="injected", recovered_at=None, verified_at=None))    # 仍在生效却 ok
+    assert validate(schema, with_fault(status="injected", recovered_at=None, recovery_status=None))  # 仍在生效却有验证时刻
+    assert validate(schema, with_fault(verified_at=None))          # ok 须有验证通过时刻
+    over_limit = json.loads(json.dumps(good))
+    over_limit["faults"] = [valid_fault()] * 33                    # 条数上限 32
+    assert validate(schema, over_limit)
+    # 合法形态：仍在生效且解除失败（恢复步骤发生过但没解除掉）
+    stuck = with_fault(status="injected", recovered_at=None, verified_at=None, recovery_status="recovery_failed")
+    assert validate(schema, stuck) == []
+    # 结构
+    assert validate(schema, with_fault(injected_at="2026-11-24 10:00:10"))  # format date-time
+    assert validate(schema, with_fault(injected_at=1763978410))    # 类型错
+    assert validate(schema, with_fault(target=""))                 # minLength
+    assert validate(schema, with_fault(extra=1))                   # 未知键
+    doc = with_fault()
+    del doc["faults"][0]["target"]                                 # 缺必填
+    assert validate(schema, doc)
+    doc = with_fault()
+    del doc["faults"][0]["recovery_status"]                        # 不适用也须显式 null
+    assert validate(schema, doc)
+    doc = json.loads(json.dumps(good))
+    doc["faults"] = valid_fault()                                  # 非数组
+    assert validate(schema, doc)
+
+
 # ---------- 防漂移钉子（schema ↔ 实现/文档） ----------
 
 

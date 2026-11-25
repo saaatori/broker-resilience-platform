@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "brp.protocol.result.v1",
-  "title": "POST /executions/{eid}/result 请求体（协议 §2.5；summary/reconciliation 键=counter/metrics 实现）",
+  "title": "POST /executions/{eid}/result 请求体（协议 §2.5；v1.1 增 failure / faults）",
   "type": "object",
   "properties": {
     "attempt": {
@@ -15,6 +15,237 @@
         "FAILED",
         "CANCELLED"
       ]
+    },
+    "failure": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "enum": [
+            "timeout",
+            "error"
+          ],
+          "description": "失败类别（协议 §2.5.1，v1.1）：timeout=总超时/超时强杀；error=其余执行错误。新增取值须升协议版本"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "人读失败说明（超长由 Agent 截断到 1024 字符）"
+        }
+      },
+      "required": [
+        "reason",
+        "message"
+      ],
+      "additionalProperties": false,
+      "description": "失败原因（v1.1）：仅 status=FAILED 时携带（见顶层 allOf）；FAILED 未携带时 Go 侧 exit_reason 记 error"
+    },
+    "faults": {
+      "type": "array",
+      "description": "故障时间线（v1.1，协议 §2.5.2）：本次执行注入的故障记录，按注入先后排列；无故障的场景省略或空数组；条数上限 32。时间先后（recovered_at 不早于 injected_at、verified_at 不早于 recovered_at）schema 表达不了，由 Go 后置校验",
+      "items": {
+        "type": "object",
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "description": "策略名，同 params_snapshot.fault.strategy（consumer_kill / consumer_pause / broker_restart / network_fault）"
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "目标资源：容器名或代理标识（总体设计表 21 target）"
+          },
+          "injected_at": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "实际注入生效时刻（RFC3339 带时区）；注入未生效（status=failed）时为 null"
+          },
+          "recovered_at": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "实际解除时刻；回传时故障仍在生效（status=injected）时为 null"
+          },
+          "verified_at": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "恢复验证通过时刻；未验证或验证未通过时为 null"
+          },
+          "status": {
+            "enum": [
+              "injected",
+              "recovered",
+              "failed"
+            ],
+            "description": "故障终态（总体设计表 21 status 的 Agent 上报子集）：injected=回传时仍在生效；recovered=已解除；failed=注入未生效"
+          },
+          "recovery_status": {
+            "oneOf": [
+              {
+                "enum": [
+                  "ok",
+                  "recovery_failed",
+                  "forced"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "恢复结果（表 21 recovery_status）：ok=恢复且验证通过；recovery_failed=恢复或验证未通过；forced=由兜底清理解除；未发生恢复步骤时为 null"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "异常信息；无异常时为 null"
+          }
+        },
+        "required": [
+          "strategy",
+          "target",
+          "injected_at",
+          "recovered_at",
+          "verified_at",
+          "status",
+          "recovery_status",
+          "error"
+        ],
+        "additionalProperties": false,
+        "description": "单条故障记录：八键显式给出，不适用者为 null（与 summary 的口径一致）。status / recovery_status 与时间戳须自洽（见 allOf）：注入未生效则什么都没发生；仍在生效则未解除、未验证；验证通过必有验证时刻",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "injected_at": {
+                  "type": "null"
+                },
+                "recovered_at": {
+                  "type": "null"
+                },
+                "verified_at": {
+                  "type": "null"
+                },
+                "recovery_status": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "injected"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "injected_at": {
+                  "type": "string"
+                },
+                "recovered_at": {
+                  "type": "null"
+                },
+                "verified_at": {
+                  "type": "null"
+                },
+                "recovery_status": {
+                  "enum": [
+                    "recovery_failed",
+                    null
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "recovered"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "injected_at": {
+                  "type": "string"
+                },
+                "recovered_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "recovery_status": {
+                  "const": "ok"
+                }
+              },
+              "required": [
+                "recovery_status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verified_at": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "maxItems": 32
     },
     "summary": {
       "type": "object",
@@ -232,6 +463,22 @@
       "description": "归档卷挂载点下的相对路径列表（v1.0.1）"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "failure"
+        ]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "FAILED"
+          }
+        }
+      }
+    }
+  ],
   "required": [
     "attempt",
     "status",
