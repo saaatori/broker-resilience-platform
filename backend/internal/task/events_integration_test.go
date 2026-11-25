@@ -6,28 +6,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
 
-// openTestEventGate 真 Redis 闸门（compose 的 localhost:6379）；不可达即跳过。
+// openTestEventGate 真 Redis 闸门（专用测试实例，连接参数见 openTestRedis）。
 // 幂等行为（SETNX/TTL）只有真 Redis 可验——fake 只证语义接线。
 func openTestEventGate(t *testing.T) *RedisEventGate {
 	t.Helper()
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379", Password: "brp_local_dev", DB: 1}) // DB1：与生产键空间隔离
+	rdb := openTestRedis(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skipf("测试 Redis 不可达（compose 栈需在跑）: %v", err)
-	}
-	// DB1 为测试专用键空间；清 exec:evt:* 避免跨轮污染（不影响 DB0 生产键）
+	// 清 exec:evt:* 避免跨轮污染（专用实例上只有测试键，不涉及任何别的键空间）
 	keys, _ := rdb.Keys(ctx, "exec:evt:*").Result()
 	if len(keys) > 0 {
 		rdb.Del(ctx, keys...)
 	}
-	t.Cleanup(func() { _ = rdb.Close() })
 	return NewRedisEventGate(rdb)
 }
 

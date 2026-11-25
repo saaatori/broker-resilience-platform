@@ -56,6 +56,43 @@ tasks:
     cmds:
       - uv run --project agent pytest
 
+  test:integration:
+    desc: Go 集成测试（自动起一次性 PG + Redis 容器，与开发环境隔离；需要 Docker 在运行；可追加 go test 参数）
+    dir: backend
+    silent: true
+    cmds:
+      - cmd: |
+          # 测试环境与开发环境分隔：这里起的是一次性的专用容器——只绑回环、端口由 Docker 随机分配、跑完即删。
+          # 不使用 task up 起的开发栈，也不读 .env / config.yaml 里的开发连接串。测试代码只认下面三个 BRP_TEST_* 变量。
+          names="brp-it-postgres brp-it-redis"
+          docker rm -f $names >/dev/null 2>&1 || true
+          docker run -d --name brp-it-postgres -e POSTGRES_USER=brp -e POSTGRES_PASSWORD=brp_it -e POSTGRES_DB=brp_test -p 127.0.0.1::5432 postgres:18-alpine >/dev/null
+          docker run -d --name brp-it-redis -p 127.0.0.1::6379 redis:8-alpine redis-server --requirepass brp_it >/dev/null
+          # 就绪等待放在容器内做，不依赖宿主机的 sleep / seq（从 PowerShell 调用也能跑）。
+          # pg_isready 带 -h 走 TCP：镜像初始化阶段的临时实例只监听 unix socket，不算就绪。
+          if ! docker exec brp-it-postgres sh -c 'i=0; until pg_isready -h 127.0.0.1 -U brp -d brp_test >/dev/null 2>&1; do i=$((i+1)); [ "$i" -lt 120 ] || exit 1; sleep 0.5; done'; then
+            echo "测试 PostgreSQL 60 秒内未就绪" >&2
+            docker rm -f $names >/dev/null 2>&1
+            exit 1
+          fi
+          if ! docker exec brp-it-redis sh -c 'i=0; until redis-cli -a brp_it --no-auth-warning ping 2>/dev/null | grep -q PONG; do i=$((i+1)); [ "$i" -lt 120 ] || exit 1; sleep 0.5; done'; then
+            echo "测试 Redis 60 秒内未就绪" >&2
+            docker rm -f $names >/dev/null 2>&1
+            exit 1
+          fi
+          pg_port=$(docker port brp-it-postgres 5432/tcp)
+          redis_port=$(docker port brp-it-redis 6379/tcp)
+          pg_port=${pg_port##*:}
+          redis_port=${redis_port##*:}
+          echo "集成测试环境：postgres 127.0.0.1:${pg_port}（库 brp_test），redis 127.0.0.1:${redis_port}"
+          rc=0
+          BRP_TEST_DSN="host=127.0.0.1 port=${pg_port} user=brp password=brp_it dbname=brp_test sslmode=disable" \
+          BRP_TEST_REDIS_ADDR="127.0.0.1:${redis_port}" BRP_TEST_REDIS_PASSWORD="brp_it" \
+          go test ./... -count=1 {{.CLI_ARGS}} || rc=$?
+          # 测试失败也要删容器；任务的退出码以 go test 为准
+          docker rm -f $names >/dev/null 2>&1
+          exit $rc
+
   lint:
     desc: 代码检查（golangci-lint / ruff / eslint）
     cmds:

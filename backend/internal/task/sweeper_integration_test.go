@@ -5,23 +5,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
 )
 
-// openTestCleanupQueue 集成队列（与 openTestEventGate 同一 DB1 键空间）。
+// openTestCleanupQueue 集成队列（与 openTestEventGate 同一个专用测试 Redis 实例；连接参数见 openTestRedis）。
 func openTestCleanupQueue(t *testing.T) *RedisCleanupQueue {
 	t.Helper()
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379", Password: "brp_local_dev", DB: 1})
+	rdb := openTestRedis(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skipf("测试 Redis 不可达: %v", err)
-	}
 	rdb.Del(ctx, cleanupQueueKey) // 清队列避免跨轮污染
-	t.Cleanup(func() { _ = rdb.Close() })
 	return NewRedisCleanupQueue(rdb)
 }
 

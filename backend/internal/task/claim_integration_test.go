@@ -2,46 +2,15 @@ package task
 
 import (
 	"errors"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
-	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
 )
-
-// openIntegrationDB 集成测试库（实施规划 §11"少量集成测试"）：
-// BRP_TEST_DSN 未设即跳过（CI 无 PG 不红）；每测试 TRUNCATE 自清。
-// 注意：TRUNCATE 会清空 test_task/test_scenario 等开发数据——验收证据以文件留档为准。
-func openIntegrationDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	dsn := os.Getenv("BRP_TEST_DSN")
-	if dsn == "" {
-		t.Skip("需要 BRP_TEST_DSN 指向测试 PG（例：host=localhost port=5432 user=brp password=brp_local_dev dbname=broker_resilience sslmode=disable）")
-	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger:         gormlogger.Discard,
-		TranslateError: true, // 与生产 OpenPG 同口径（uq 冲突译码——day35 评审 I-1：测试连接漏配曾致穿透假象）
-	})
-	if err != nil {
-		t.Fatalf("连测试库: %v", err)
-	}
-	// 迁移清单与生产同源（storage.AutoMigrate）：此前这里只迁四表，结果三表靠开发库既有结构"顺带存在"——
-	// 换一个空库（或生产新增列，如 v1.1 的 test_result.failure）集成测试就会建立在旧结构上。
-	if err := storage.AutoMigrate(db); err != nil {
-		t.Fatalf("AutoMigrate: %v", err)
-	}
-	if err := db.Exec("TRUNCATE test_task, test_execution, test_scenario, agent_instance, test_result, test_metric_summary, test_report RESTART IDENTITY").Error; err != nil {
-		t.Fatalf("TRUNCATE: %v", err)
-	}
-	return db
-}
 
 // seedClaimFixture 造最小领取环境：场景 + 1 个 PENDING 任务 + 1 个 Agent，返回三者。
 func seedClaimFixture(t *testing.T, db *gorm.DB) (*model.TestScenario, *model.TestTask, *model.AgentInstance) {
