@@ -13,7 +13,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       TZ: Asia/Shanghai
     ports:
-      - "5432:5432"          # 开发期映射到宿主机，供本机 Go 进程连接
+      # 只绑本机回环：供本机 Go 进程 / DBeaver / 集成测试连接。需从别的设备访问时改成 "0.0.0.0:5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       # PG 18+ 官方镜像要求挂载父目录（数据实际存放在其下的版本子目录）
       - brp_pgdata:/var/lib/postgresql
@@ -31,7 +32,11 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     ports:
-      - "6379:6379"          # 开发期映射到宿主机
+      # 只绑本机回环（同 postgres）：供本机 go run 与集成测试连接，localhost 与 127.0.0.1 连到的都是这个容器。
+      # 2026-11-24 曾绑不上——本机禅道自带的 Redis 服务（rediszt3）占着 127.0.0.1:6379；该服务停用并改为
+      # 手动启动（2026-11-25）后才收紧。若它再被启用，这里会端口冲突，redis 及排在其后的 go 都起不来（排障 #43）。
+      # 需从别的设备访问时改成 "0.0.0.0:6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - brp_redisdata:/data
     networks:
@@ -91,7 +96,9 @@ services:
     volumes:
       - ../nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - "80:80"
+      # 平台入口只绑本机回环（登录限流按用户名计数，对外暴露等于把管理员锁门外的人也放进局域网）。
+      # 需从别的设备访问页面时改成 "0.0.0.0:80:80"
+      - "127.0.0.1:80:80"
     depends_on:
       - go
     networks:
