@@ -133,15 +133,19 @@ func (r *Repository) SaveReportArtifacts(taskID int64, executionID string, artif
 }
 
 // FinishExecution 执行收口：子状态置终态（day33 M-2）+ finished_at + exit_reason（表 20）。
+// 守卫=该执行尚未被收口（finished_at 为空）——先收口者固化：result 与 sweep 竞态时后写方 RowsAffected=0
+// 幂等放弃（day37 评审 I-1：杜绝 test_result=COMPLETED 而 exec=ABORTED 的账实矛盾）。
+// 不能按"status 非终态"判：STATUS 事件会把 DONE / ABORTED 写进执行状态（表 20 子状态），而协议自己的时序
+// 是先报终态子状态、后回传 result（取消闭环 ABORTED → result(CANCELLED)）——那样判会让 result 的收口
+// 变成 0 行更新，exit_reason 与 finished_at 全丢（2026-11-24 评审 I-1 实测）。sweep 只处理非终态执行，
+// 其 finished_at 必为空，对 sweep 而言两种守卫等价。
 func (r *Repository) FinishExecution(eid, substate, exitReason string) error {
 	updates := map[string]any{"status": substate, "finished_at": time.Now()}
 	if exitReason != "" {
-		updates["exit_reason"] = exitReason // COMPLETED=空 / FAILED=error / CANCELLED=cancelled
+		updates["exit_reason"] = exitReason // FAILED=failure.reason（缺失兜底 error）/ CANCELLED=cancelled；COMPLETED 不写
 	}
-	// 终态保持（day37 评审 I-1）：先到者固化——sweep 与 result 竞态时后写方 RowsAffected=0 幂等放弃，
-	// 杜绝 test_result=COMPLETED 而 exec=ABORTED 的写序互覆盖账实矛盾。
 	return r.db.Model(&model.TestExecution{}).
-		Where("execution_id = ? AND status NOT IN ?", eid, []string{string(execStatusDone), string(execStatusAborted)}).
+		Where("execution_id = ? AND finished_at IS NULL", eid).
 		Updates(updates).Error
 }
 

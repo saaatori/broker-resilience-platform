@@ -13,6 +13,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/model"
+	"github.com/saaatori/broker-resilience-platform/backend/internal/storage"
 )
 
 // openIntegrationDB 集成测试库（实施规划 §11"少量集成测试"）：
@@ -31,7 +32,9 @@ func openIntegrationDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("连测试库: %v", err)
 	}
-	if err := db.AutoMigrate(&model.TestScenario{}, &model.TestTask{}, &model.TestExecution{}, &model.AgentInstance{}); err != nil {
+	// 迁移清单与生产同源（storage.AutoMigrate）：此前这里只迁四表，结果三表靠开发库既有结构"顺带存在"——
+	// 换一个空库（或生产新增列，如 v1.1 的 test_result.failure）集成测试就会建立在旧结构上。
+	if err := storage.AutoMigrate(db); err != nil {
 		t.Fatalf("AutoMigrate: %v", err)
 	}
 	if err := db.Exec("TRUNCATE test_task, test_execution, test_scenario, agent_instance, test_result, test_metric_summary, test_report RESTART IDENTITY").Error; err != nil {

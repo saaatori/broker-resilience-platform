@@ -308,8 +308,15 @@ func (f *fakeTaskRepo) SaveReportArtifacts(taskID int64, executionID string, art
 func (f *fakeTaskRepo) FinishExecution(eid, substate, exitReason string) error {
 	for i := range f.execRows {
 		if f.execRows[i].ExecutionID == eid {
+			// 与真仓库守卫一致：已收口（finished_at 非空）的执行不被后写方覆盖——
+			// fake 若省掉这个条件，"终态保持"类行为在单测里就测不到（2026-11-24 评审 I-1 的教训）
+			if f.execRows[i].FinishedAt != nil {
+				return nil
+			}
 			f.execRows[i].Status = substate
-			f.execRows[i].ExitReason = &exitReason
+			if exitReason != "" { // 与真 repo 一致：COMPLETED 不写 exit_reason（保持 NULL），而不是写空串
+				f.execRows[i].ExitReason = &exitReason
+			}
 			now := time.Now() // 与真 repo 对齐：finished_at 一并落
 			f.execRows[i].FinishedAt = &now
 			return nil

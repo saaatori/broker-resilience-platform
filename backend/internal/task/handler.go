@@ -87,7 +87,7 @@ func (h *Handler) RegisterAgentAuthedRoutes(rg *gin.RouterGroup) {
 }
 
 // postResult POST /api/v1/executions/:eid/result（X-Agent-Token）：结果回传（§2.5）。
-// 成功/重复/尾随均 200（first-wins 幂等）；404 归属；400 schema/attempt；500 内部。
+// 成功/重复/尾随均 200（first-wins 幂等）；404 归属；400 schema/attempt/faults 时间戳先后/不可入库字符；500 内部。
 func (h *Handler) postResult(c *gin.Context) {
 	agent, ok := agentFromContext(c)
 	if !ok {

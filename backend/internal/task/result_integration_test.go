@@ -1,6 +1,7 @@
 package task
 
 import (
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -83,6 +84,123 @@ func TestIntegrationResultFlow(t *testing.T) {
 	}
 	if len(leaseOK) != 0 || len(cancel) != 0 {
 		t.Fatalf("终态执行不应入任一数组: lease=%v cancel=%v", leaseOK, cancel)
+	}
+}
+
+// TestIntegrationResultFailurePersisted 集成（真 PG，协议 v1.1）：失败原因端到端落库——
+// exit_reason 取 failure.reason（timeout），failure 原文进 test_result.failure（jsonb，AutoMigrate 新增列）。
+// 该用例在空库上跑即同时证明：生产迁移清单能把新列带到既有库结构之外的环境。
+func TestIntegrationResultFailurePersisted(t *testing.T) {
+	db := openIntegrationDB(t)
+	gate := openTestEventGate(t)
+	repo := NewRepository(db)
+	svc := NewService(repo, ServiceDeps{
+		Events: newTestEventsValidator(t), Result: newTestResultValidator(t), Gate: gate, Hub: NewHub(),
+	})
+
+	reg, err := svc.Register("res-fail-host", "1.0", 1)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	agentRow, _ := repo.FindAgentByUUID(reg.AgentUUID)
+	_, taskRow := seedScenarioAndTask(t, db)
+	_, exec, _, err := repo.ClaimNextTask(agentRow.ID)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	raw := resultJSONExtra("FAILED", 1, `"failure":{"reason":"timeout","message":"total timeout 300s"}`)
+	if err := svc.Result(agentRow, exec.ExecutionID, raw); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	var taskDB model.TestTask
+	db.First(&taskDB, taskRow.ID)
+	if taskDB.Status != "FAILED" {
+		t.Fatalf("task 应 FAILED: %s", taskDB.Status)
+	}
+	var execDB model.TestExecution
+	db.Where("execution_id = ?", exec.ExecutionID).First(&execDB)
+	if execDB.Status != "DONE" || execDB.ExitReason == nil || *execDB.ExitReason != "timeout" {
+		t.Fatalf("exec 应 DONE/timeout: status=%s exit_reason=%v", execDB.Status, execDB.ExitReason)
+	}
+	var resDB model.TestResult
+	db.Where("execution_id = ?", exec.ExecutionID).First(&resDB)
+	// jsonb 列读回的是 PG 规范化文本（冒号后带空格、键有序）——按内容断言，不比字面。
+	var stored struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	if resDB.Failure == nil || json.Unmarshal([]byte(*resDB.Failure), &stored) != nil || stored.Reason != "timeout" {
+		t.Fatalf("failure 应落 test_result.failure 且 reason=timeout: %v", resDB.Failure)
+	}
+	var colType string
+	db.Raw(`SELECT data_type FROM information_schema.columns
+	        WHERE table_name = 'test_result' AND column_name = 'failure'`).Scan(&colType)
+	if colType != "jsonb" {
+		t.Fatalf("test_result.failure 列类型应 jsonb: %q", colType)
+	}
+}
+
+// TestIntegrationResultAfterTerminalSubstate 集成（真 PG，2026-11-24 评审 I-1）：
+// 协议自己的时序里，Agent 会先经 STATUS 上报终态子状态、再回传 result——取消闭环是 ABORTED → result(CANCELLED)
+// （§4），超时强杀也可能先报终态子状态。STATUS 会把 DONE / ABORTED 写进执行状态；FinishExecution 的守卫
+// 若按"状态非终态"判定，随后的 result 就是 0 行更新，exit_reason 与 finished_at 全部丢失。
+// 守卫应按"是否已被收口"（finished_at）判定：终态子状态先到的执行，仍须由 result 收口。
+func TestIntegrationResultAfterTerminalSubstate(t *testing.T) {
+	db := openIntegrationDB(t)
+	gate := openTestEventGate(t)
+	repo := NewRepository(db)
+	svc := NewService(repo, ServiceDeps{
+		Events: newTestEventsValidator(t), Result: newTestResultValidator(t), Gate: gate, Hub: NewHub(),
+	})
+
+	reg, err := svc.Register("res-term-host", "1.0", 1)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	agentRow, _ := repo.FindAgentByUUID(reg.AgentUUID)
+	seedTwoTasks(t, db, "res_term_scenario")
+	claim := func() *model.TestExecution {
+		_, exec, _, err := repo.ClaimNextTask(agentRow.ID)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		return exec
+	}
+	reportSubstate := func(eid, sub string) {
+		raw := []byte(`{"seq":0,"ts":"2026-11-24T10:00:00+00:00","type":"STATUS","payload":{"substate":"` + sub + `"}}`)
+		if err := svc.Event(agentRow, eid, raw); err != nil {
+			t.Fatalf("STATUS(%s): %v", sub, err)
+		}
+	}
+
+	// 取消闭环时序（协议 §4）：子状态 ABORTED 先到，result(CANCELLED) 后到
+	execA := claim()
+	reportSubstate(execA.ExecutionID, "ABORTED")
+	if err := svc.Result(agentRow, execA.ExecutionID, resultJSON("CANCELLED", 1)); err != nil {
+		t.Fatalf("result(CANCELLED): %v", err)
+	}
+	// 终态子状态先到的 FAILED：exit_reason 须取自 failure.reason（v1.1）
+	execB := claim()
+	reportSubstate(execB.ExecutionID, "DONE")
+	raw := resultJSONExtra("FAILED", 1, `"failure":{"reason":"timeout","message":"total timeout 300s"}`)
+	if err := svc.Result(agentRow, execB.ExecutionID, raw); err != nil {
+		t.Fatalf("result(FAILED): %v", err)
+	}
+
+	cases := []struct {
+		eid, wantStatus, wantReason string
+	}{
+		{execA.ExecutionID, "ABORTED", "cancelled"},
+		{execB.ExecutionID, "DONE", "timeout"},
+	}
+	for _, c := range cases {
+		var execDB model.TestExecution
+		db.Where("execution_id = ?", c.eid).First(&execDB)
+		if execDB.Status != c.wantStatus || execDB.ExitReason == nil || *execDB.ExitReason != c.wantReason || execDB.FinishedAt == nil {
+			t.Fatalf("终态子状态先到时 result 仍须收口: want %s/%s/finished_at, got %s/%v/%v",
+				c.wantStatus, c.wantReason, execDB.Status, execDB.ExitReason, execDB.FinishedAt)
+		}
 	}
 }
 

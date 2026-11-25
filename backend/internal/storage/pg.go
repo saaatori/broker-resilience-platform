@@ -44,14 +44,20 @@ func OpenPG(dsn string) (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	// 新增表时在此追加模型，如 &model.AgentInstance{}
-	if err := db.AutoMigrate(
+	// 迁移清单与集成测试共用同一份（AutoMigrate）——测试设施不得另抄一份而漂移（排障 #31 同源教训）
+	if err := AutoMigrate(db); err != nil {
+		return nil, fmt.Errorf("auto migrate: %w", err)
+	}
+	return db, nil
+}
+
+// AutoMigrate 生产迁移清单（新增表/列时只改这里）。M0 阶段用 AutoMigrate 快速起步；表结构稳定后
+// 演进为版本化迁移脚本。注意 AutoMigrate 只加不改：已有列的类型变化不会被 ALTER（排障 #21）。
+func AutoMigrate(db *gorm.DB) error {
+	return db.AutoMigrate(
 		&model.SysUser{}, &model.BrokerInstance{},
 		&model.TestScenario{}, &model.TestCase{}, &model.TestTask{}, &model.TestExecution{},
 		&model.AgentInstance{},
 		&model.TestResult{}, &model.TestMetricSummary{}, &model.TestReport{},
-	); err != nil {
-		return nil, fmt.Errorf("auto migrate: %w", err)
-	}
-	return db, nil
+	)
 }

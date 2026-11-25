@@ -1,4 +1,4 @@
-// result.go 结果回传（M2 第 35 天，协议 v1.0.5 §2.5/§4）：
+// result.go 结果回传（M2 第 35 天，协议 v1.0.5 §2.5/§4；v1.1 增 failure / faults）：
 // first-wins 幂等（PG uq，重复/尾随 200 直返零副作用）→ 状态机转移矩阵（含 v1.0.4 ※※
 // 与 v1.0.5 I-1/I-4 全分支）→ 三表落库 → exec 子状态终态（day33 M-2 强制项）→ 取消键清理 → 终态广播。
 // 幂等分层对照记档：events=Redis TTL 窗口去重（进度级，at-most-once 窗口已记档）；
@@ -6,11 +6,14 @@
 package task
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
+	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -27,6 +30,8 @@ var ErrResultExists = errors.New("result already exists")
 type resultEnvelope struct {
 	Attempt        int             `json:"attempt"`
 	Status         string          `json:"status"`
+	Failure        json.RawMessage `json:"failure"` // 协议 v1.1：失败原因，仅 FAILED 携带（schema 约束）
+	Faults         json.RawMessage `json:"faults"`  // 协议 v1.1：故障时间线——当前仅校验，落库随 day53（fault_injection 表）
 	Summary        json.RawMessage `json:"summary"`
 	Reconciliation json.RawMessage `json:"reconciliation"`
 	Artifacts      []string        `json:"artifacts"`
@@ -60,15 +65,88 @@ func execTerminalSubstate(resultStatus string) string {
 	return execStatusDone
 }
 
-// exitReasonOf 表 20 退出原因映射：FAILED=error / CANCELLED=cancelled / COMPLETED 空。
-func exitReasonOf(resultStatus string) string {
+// exitReasonOf 表 20 退出原因映射：FAILED→failure.reason（协议 v1.1；未携带时兜底 error——
+// 不因为缺原因把整份结果拒之门外）/ CANCELLED=cancelled / COMPLETED 空。
+func exitReasonOf(resultStatus string, failure json.RawMessage) string {
 	switch resultStatus {
 	case "FAILED":
+		if reason := failureReason(failure); reason != "" {
+			return reason
+		}
 		return "error"
 	case "CANCELLED":
 		return "cancelled"
 	}
 	return ""
+}
+
+// failureReason 取 failure.reason；未携带 failure 块（或解码失败）返回空串。
+// 取值域 {timeout, error} 由 schema 约束，此处不再枚举。
+func failureReason(failure json.RawMessage) string {
+	var f struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(failure, &f); err != nil {
+		return ""
+	}
+	return f.Reason
+}
+
+// faultTimes faults 记录里的三个时间字段。
+var faultTimes = []string{"injected_at", "recovered_at", "verified_at"}
+
+// checkFaults 协议 v1.1 后置校验——schema 表达不了的两类规则：
+//   - 时间戳须为 RFC3339 带时区：schema 的 format: date-time 在 v6 默认不校验（同 events 的 ts，day34 裁决）；
+//   - 时间先后：recovered_at 不早于 injected_at，verified_at 不早于 recovered_at（各取非 null 者）。
+//
+// 返回记录条数（供调用方留痕）。未携带 faults 时返回 (0, nil)。
+// 逐键取原始值再解：日后 schema 给记录加非字符串字段，也不会把合法请求误判成 400。
+func checkFaults(faults json.RawMessage) (int, error) {
+	if len(faults) == 0 {
+		return 0, nil
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(faults, &items); err != nil {
+		return 0, err // schema 已保证可解，防御分支
+	}
+	for i, item := range items {
+		parsed := map[string]time.Time{}
+		for _, name := range faultTimes {
+			raw, ok := item[name]
+			if !ok || string(raw) == "null" {
+				continue
+			}
+			var ts string
+			if err := json.Unmarshal(raw, &ts); err != nil {
+				return 0, fmt.Errorf("faults[%d].%s 须为字符串时间戳", i, name)
+			}
+			t, err := time.Parse(time.RFC3339, ts)
+			if err != nil {
+				return 0, fmt.Errorf("faults[%d].%s 需为 RFC3339 带时区: %q", i, name, ts)
+			}
+			parsed[name] = t
+		}
+		if recovered, ok := parsed["recovered_at"]; ok && parsed["injected_at"].After(recovered) {
+			return 0, fmt.Errorf("faults[%d].recovered_at 不得早于 injected_at", i)
+		}
+		if verified, ok := parsed["verified_at"]; ok && parsed["recovered_at"].After(verified) {
+			return 0, fmt.Errorf("faults[%d].verified_at 不得早于 recovered_at", i)
+		}
+	}
+	return len(items), nil
+}
+
+// checkJSONBStorable 回传体的 summary / reconciliation / failure 会原样进 jsonb 列。PostgreSQL 的 jsonb 拒绝
+// \u0000 转义与非法 UTF-8 字节（22P05），而 schema 放行——不在入口拦就会变成落库时 500，Agent 重试多少次都过不去。
+// failure.message 取自日志文本，是最可能带进这类内容的字段。
+func checkJSONBStorable(raw []byte) error {
+	if !utf8.Valid(raw) {
+		return errors.New("请求体含非法 UTF-8 字节（PostgreSQL jsonb 无法存储）")
+	}
+	if bytes.Contains(raw, []byte(`\u0000`)) {
+		return errors.New(`请求体含 NUL 字符（\u0000，PostgreSQL jsonb 无法存储）`)
+	}
+	return nil
 }
 
 // metricUnits 五指标单位映射（表 23：率类 %、时长 s）。
@@ -135,6 +213,13 @@ func (s *Service) Result(agent *model.AgentInstance, eid string, raw []byte) err
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidResult, err)
 	}
+	faultCount, err := checkFaults(req.Faults)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidResult, err)
+	}
+	if err := checkJSONBStorable(raw); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidResult, err)
+	}
 	if req.Attempt != exec.Attempt {
 		return fmt.Errorf("%w: attempt %d 与执行轮次 %d 不匹配", ErrInvalidResult, req.Attempt, exec.Attempt)
 	}
@@ -163,11 +248,20 @@ func (s *Service) Result(agent *model.AgentInstance, eid string, raw []byte) err
 		Metrics:        string(req.Summary),
 		Reconciliation: string(req.Reconciliation),
 	}
+	if len(req.Failure) > 0 { // v1.1：失败原因原文（仅 FAILED 携带）；其余状态保持 NULL
+		failure := string(req.Failure)
+		r.Failure = &failure
+	}
 	if err := s.repo.CreateResult(r); err != nil {
 		if errors.Is(err, ErrResultExists) {
 			return nil // 并发迟到方：幂等语义 200
 		}
 		return fmt.Errorf("create result: %w", err)
+	}
+	if faultCount > 0 {
+		// v1.1 只定了 wire 形状：故障记录的落库（fault_injection 表）随 day53 实现，在此之前校验后不持久化——
+		// 留痕以免"带了却查不到"被当成静默丢失。放在落库之后：被拒与重复的回传不算"带了却查不到"。
+		log.Printf("task: result 携带 %d 条故障记录（协议 v1.1，fault_injection 落库随 day53，当前仅校验）task=%d eid=%s", faultCount, exec.TaskID, eid)
 	}
 	if metrics := summaryMetrics(req.Summary); len(metrics) > 0 {
 		if err := s.repo.SaveMetricSummaries(eid, metrics, metricUnits); err != nil {
@@ -181,7 +275,7 @@ func (s *Service) Result(agent *model.AgentInstance, eid string, raw []byte) err
 	}
 
 	s.finalizeTransition(exec.TaskID, req.Status)
-	if err := s.repo.FinishExecution(eid, execTerminalSubstate(req.Status), exitReasonOf(req.Status)); err != nil {
+	if err := s.repo.FinishExecution(eid, execTerminalSubstate(req.Status), exitReasonOf(req.Status, req.Failure)); err != nil {
 		return fmt.Errorf("finish execution: %w", err)
 	}
 	if err := s.deps.Gate.RemoveCancelFlag(eid); err != nil {

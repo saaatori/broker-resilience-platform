@@ -124,9 +124,10 @@ func TestIntegrationSweepScanSet(t *testing.T) {
 	finExec := &model.TestExecution{ExecutionID: "22222222-2222-4222-8222-222222222221", TaskID: taskFin.ID,
 		Attempt: 1, AgentID: 1, Status: "CLAIMED", LeaseUntil: ptrTimePass()}
 	db.Create(finExec)
-	// 中断窗口：任务 RUNNING + exec DONE + 过期
+	// 中断窗口：任务 RUNNING + exec DONE（result 已收口——真实收口必带 finished_at）+ 过期
+	finished := ptrTimePass()
 	intExec := &model.TestExecution{ExecutionID: "22222222-2222-4222-8222-222222222222", TaskID: taskInt.ID,
-		Attempt: 1, AgentID: 1, Status: string(execStatusDone), LeaseUntil: ptrTimePass()}
+		Attempt: 1, AgentID: 1, Status: string(execStatusDone), LeaseUntil: ptrTimePass(), FinishedAt: finished}
 	db.Create(intExec)
 
 	views, err := repo.FindLeaseExpired(time.Now())
@@ -149,7 +150,9 @@ func TestIntegrationSweepScanSet(t *testing.T) {
 		t.Fatal("任务终态不得入扫描集")
 	}
 
-	// I-1 钉子：对已 DONE 的 exec 调 FinishExecution(ABORTED) 不覆盖
+	// I-1 钉子：对已被 result 收口的 exec（DONE + finished_at）调 FinishExecution(ABORTED) 不覆盖。
+	// 造数须带 finished_at——守卫按"是否已收口"判定；只给 DONE 不给 finished_at 的是"终态子状态先到、
+	// result 未到"，那种执行正应当被随后的收口写入（见 TestIntegrationResultAfterTerminalSubstate）。
 	if err := repo.FinishExecution(intExec.ExecutionID, string(execStatusAborted), leaseLostReason); err != nil {
 		t.Fatalf("FinishExecution: %v", err)
 	}
