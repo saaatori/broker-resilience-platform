@@ -422,3 +422,83 @@
 **原因**：三层问题叠在一起。①集成测试的辅助函数开头会 `TRUNCATE` 业务表并写入夹具数据，跑在哪个库就改哪个库；②它靠 `BRP_TEST_DSN` 指定目标库，而 `BRP_TEST_DSN` 未设置时的跳过提示给出的示例就是**开发库的连接串**，测试 Redis 更是写死了 `localhost:6379` 加开发口令——代码本身在把人往开发环境上引；③跑隔离环境要手工起容器、等就绪、设变量、跑完再删，步骤一多就有人图省事直接用开发库。只写一条"不要对着开发库跑"的规则挡不住这个。
 
 **解决**：规则、工具、护栏三层一起做。①`task test:integration` 一条命令完成"起一次性容器 → 等就绪 → 设 `BRP_TEST_*` → 跑 → 删"，测试失败也删，就绪等待放在容器内做（不依赖宿主机的 `sleep` / `seq`，PowerShell 下也能跑）；②测试代码只认 `BRP_TEST_DSN`、`BRP_TEST_REDIS_ADDR`、`BRP_TEST_REDIS_PASSWORD`，不回退到开发环境；③护栏：库名不是 `brp_test` 开头直接拒绝运行，且排在任何写入之前（对着一个名叫 `broker_resilience` 的空库实测：拒绝前后都是 0 张表）；配置只配一半（有 DSN 没 Redis 地址）或声明的 Redis 连不上时**报错而不是跳过**，避免依赖 Redis 的用例静默消失、测试结论看起来全绿。教训：**分隔不能只靠自觉，要让"省事的路"就是"安全的路"**；测试基础设施里的默认值和提示语也是代码，写错了同样会把人带沟里。
+
+## 依赖与锁文件（续）
+
+### 49. 锁文件绑定的镜像站返回 403：镜像里 `uv sync --frozen` 装不出依赖（2026-11-26）
+
+**现象**：Agent 镜像第一次真正装依赖（此前是零依赖占位），Dockerfile 里 `uv sync --frozen --no-dev` 在构建容器中失败：下载 `charset-normalizer` 的 wheel 时 `https://pypi.tuna.tsinghua.edu.cn/packages/...` 返回 `403 Forbidden`。在宿主机上用 curl 请求同一个地址，UA 换成 `uv/0.12.17`、`pip/26.0`、`curl/8.0`、`python-urllib/3.13` 都是 403——不是客户端被识别，是这个镜像站对这台机器整体不可用。`/simple/` 索引页同样 403；同属 TUNA 的 bfsu 镜像也是 403。
+
+**原因**：三层叠在一起。①`uv.lock` 记的是每个包的来源 registry 和 wheel 的下载地址（#42），`--frozen` 就是按这些地址原样下载，构建时改不了指向；②不冻结、改默认索引去同步，uv 会重新解析并整体改写锁文件（#42 的教训），而锁文件在仓库里；③本机的 uv 缓存里已有这些 wheel，所以宿主机上离线同步一切正常，问题只在"空缓存的构建容器"里出现。
+
+**解决**：不动锁文件，把"解析"和"下载"拆开。Dockerfile 分两段：导出阶段用 uv 离线从锁文件导出"精确版本 + sha256"清单（`uv export --frozen --offline --no-dev --no-emit-project`），运行阶段用 `pip install --require-hashes` 安装。哈希校验保证换一个站拿到的仍是锁定的同一批文件；安装源做成构建参数 `PIP_INDEX_URL`（默认 `https://pypi.org/simple`），网络慢时 `--build-arg` 换镜像站。当天从构建容器内实测：pypi.org、腾讯云、阿里云返回 200，清华、华为云返回 403——华为云在宿主机上是 200。教训：**锁文件把可复现性绑在了一个镜像站上，而镜像站的可用性不归你管**；需要"按别的站下载同一批文件"时，导出带哈希的清单比改锁稳；**选源要在构建容器那一侧测**，宿主机通不代表容器通，反过来也一样。
+
+### 50. 官方 uv 镜像没有 shell：`RUN` 的 shell 形式起不来，`uv` 也不在 PATH 上（2026-11-26）
+
+**现象**：导出阶段 `FROM ghcr.io/astral-sh/uv:0.12.17`，`RUN uv export ...` 报 `exec: "/bin/sh": stat /bin/sh: no such file or directory`；改成 exec 形式 `RUN ["uv", ...]` 后又报 `exec: "uv": executable file not found in $PATH`。
+
+**原因**：不带后缀的 `ghcr.io/astral-sh/uv:<版本>` 是 distroless 镜像，只有 `/uv`、`/uvx` 两个可执行文件，没有 shell，`/uv` 也不在 `$PATH` 里——它靠 ENTRYPOINT 调用，而 `RUN` 不经过 ENTRYPOINT。
+
+**解决**：`RUN ["/uv", "export", ...]`——exec 形式加绝对路径。只想借 uv 解析锁文件时，这样就不必换用带 shell 的 `-bookworm-slim` 变体。若要把 uv 带进自己的基础镜像，`COPY --from=ghcr.io/astral-sh/uv:<版本> /uv /uvx /bin/` 也可以，但它会成为独立的一层，之后再 `rm` 镜像也不会变小（当天单阶段版 280MB，改成两段式、uv 不进运行阶段后 201MB）。
+
+## 忽略规则与测试资产（续）
+
+### 51. `.dockerignore` 不带斜杠的模式只匹配上下文根这一层：`__pycache__/` 挡不住子目录（2026-11-26）
+
+**现象**：`.dockerignore` 里写了 `__pycache__/` 和 `*.pyc`，构建出的镜像里 `executor/__pycache__/` 仍然在——是宿主机上 pytest 跑出来的缓存，带着本机的修改时间一起被 `COPY` 进去了。
+
+**原因**：`.dockerignore` 的模式按 Go 的 `filepath.Match` 规则匹配，不带 `/` 的模式只对上下文根目录下的名字生效，不递归到子目录。`tests/`、`.venv/` 这类在根上的目录挡得住，`executor/__pycache__` 挡不住。
+
+**解决**：子目录用 `**/` 前缀：`**/__pycache__`、`**/*.pyc`。Agent 的 `.dockerignore` 已改；`lab/.dockerignore` 是同一种写法，而 `lab/Dockerfile` 是整目录 `COPY . /app/lab`——当天查了现有的 `brp-lab:dev` 镜像，`/app/lab/helpers/__pycache__` 与 `/app/lab/scenarios/normal_delivery/__pycache__` 两个目录确实在里面（无害，但不干净，下次重建 lab 镜像时一并改）。教训：**忽略规则写完要看一眼镜像里实际有什么**（`docker run --rm <镜像> ls -A <目录>`），"配了"不等于"生效了"。
+
+## 端口、镜像与验收探针（续）
+
+### 52. 只 `up` 一个服务，没改动的依赖容器也被重建；事后再查，证据已经没了（2026-11-26）
+
+**现象**：改了 compose 里 agent 服务的配置后执行 `docker compose ... up -d --build agent`，预期只重建 agent，实际 postgres、redis、go、agent 四个容器都被重建（frontend 没有）。事后想查原因：旧容器已销毁，`docker events` 里只剩最近几分钟的健康检查事件。
+
+**原因**（查到的部分）：
+
+- **go**：`--build <服务>` 会把被选中的服务里所有带 `build:` 的一并构建——`agent` 依赖 `go`，`go` 也被选中并重新构建。重建后的镜像内容没变（`Created` 仍是两天前），但镜像摘要变了，compose 据此判定"镜像已更新"而重建容器。
+- **postgres / redis**：**未查明**。在一个一次性的 compose 项目里复现（a ← b ← c ← d，只改 c 再 `up -d --build c`），结果只有 c 被重建，依赖与被依赖者都没动——说明 compose 没有"连带重建"的规则。那么当时这两个服务的配置或镜像相对运行中的容器应当本来就有差异，但无法取证。
+- **事件缓冲**：`docker events` 只返回了 256 条，正好是 daemon 内存缓冲的上限。三个带健康检查的容器每 5 秒各产生 3 条 exec 事件，几分钟就把更早的记录冲掉了。
+
+**解决**：①动栈之前先 `docker compose ... up -d --dry-run [<服务>]` 预演，它会原样打印将要 Recreate / Running 的容器；向用户说明"会动哪些容器"时照 dry-run 的结果讲，不要按"我只指定了一个服务"推断。②重建之后核对数据面：数据卷是保留的，但要用 `.env` 里的口令实际连一次 PG 和 Redis、数一遍行数，并经 :80 入口确认 nginx 到 go 的反代仍然通。③可能需要事后取证时，动栈之前先把各容器的标签存下来（`docker inspect <容器> --format '{{json .Config.Labels}}'`，其中 `com.docker.compose.config-hash` 就是 compose 判断"配置是否变过"的依据）。④只想更新一个服务时，别用 `up -d --build <服务>`：它会把被选中服务里带 `build:` 的依赖镜像一并重建，依赖容器随之被重建（go 那次就是这样）。分成两步——`docker compose … build <服务>` 只构建这一个镜像，再 `up -d <服务>`（不带 `--build`）。当天第二次更新 agent 就是这么做的，预演与实际都只有 agent 被重建。另记：容器的 `com.docker.compose.depends_on` 标签格式是"依赖:条件:restart"，第三段是 depends_on 的 `restart` 选项（默认 false），不能拿它判断启动依赖条件是否满足——条件是否生效，看 `up` 输出里的等待顺序和容器启动日志。教训：**"我只动了 X"是对输入的描述，不是对结果的描述**；结果要看 dry-run 和事后核对。另记一条相关的实测：compose 的配置哈希不含 `depends_on`——只改启动依赖关系时，运行中的容器不会被重建，新的依赖条件要到下次重建才生效。
+
+## 测试编写（续）
+
+### 53. 把"关掉监听套接字"当成"服务不可达"：keep-alive 连接还活着（2026-11-26）
+
+**现象**：测试里先让 HTTP 客户端对本地假服务完成一次请求，再关闭假服务（`server.shutdown()` 加 `server_close()`），然后断言下一次请求报"连不上"——结果请求成功返回了，断言 DID NOT RAISE。
+
+**原因**：`server_close()` 只关监听套接字，不再接受新连接；已经建立的连接由各自的处理线程持有，仍然可读可写。客户端 Session 的连接池里正好留着这条 keep-alive 连接，下一次请求直接复用了它。
+
+**解决**：要模拟"连不上"，让客户端指向一个确定没人监听的地址——先 bind 到 0 号端口拿到一个空闲端口号再关掉，用它拼 URL。附带一个现象：Windows 上连接本机一个拒绝连接的端口，要等约 2 秒才报告"连接被拒"，所以这类用例单条就要 2 秒，属正常情况。
+
+### 54. 测试替身漏了真实现的一个属性：被测线程静默退出，整套用例全红（2026-11-26）
+
+**现象**：主循环的 22 个用例里 21 个红，每个都要等到超时，整套跑了 99 秒。写个脚本把循环线程里的异常原样打出来才看到：`AttributeError: 'FakeClient' object has no attribute 'agent_id'`——循环在注册成功后读这个属性，线程当场退出，之后所有"等到某条件成立"的断言都只能等到超时。
+
+**原因**：假客户端是照着脑子里的接口写的，漏了真客户端的 `agent_id`；而循环跑在子线程里，异常只被 pytest 记成一条 warning，不会让用例直接失败。与 #31、#47 同源：替身与真实现的差异，让问题换了一种更难认的形态出现。
+
+**解决**：①写替身之前对着真实现的源码把接口列一遍，用到的方法和属性逐个对上。②被测代码跑在子线程时，收尾断言里带上"线程还活着且没有未处理的异常"，让根因第一时间暴露，而不是表现为一堆超时。教训：**大批量同时变红而且都是超时，先怀疑测试设施，再怀疑被测代码**——先把线程里的异常原样打出来。
+
+## 脚本与工具（续 2）
+
+### 55. 设了 `MSYS_NO_PATHCONV=1` 之后，原生程序收到的 `/tmp/...` 打不开（2026-11-26）
+
+**现象**：Git Bash 里 `T=$(mktemp -d)` 得到 `/tmp/xxx`，作为参数传给原生的 `python` 脚本去读写，报 `FileNotFoundError: '\\tmp\\xxx\\...'`。同一条命令里，前面一次同样的调用是好的。
+
+**原因**：Git Bash 默认把长得像 POSIX 路径的参数转成 Windows 路径再传给原生程序。为了不让 docker 的 `/app/...` 被改写（#11）而 `export MSYS_NO_PATHCONV=1` 之后，这个转换对**所有**参数都关掉了：`/tmp/xxx` 原样传给 Python，被解析成当前盘符根下的 `\tmp\xxx`。`export` 之后的每条命令都受影响，所以只设了一次的变量会让后面不相关的步骤出错。
+
+**解决**：给原生程序的路径先用 `cygpath -m "$T"` 转成 `C:/...` 形式再传；`MSYS_NO_PATHCONV=1` 尽量只加在那一条 docker 命令前面，不要 `export`。同一天还踩到三个同类的小坑，一并记：`docker run` 不带 `-i` 时，`python -` 从 stdin 读到的是空的，脚本看起来"跑了"其实一行没执行（#33 的同型）；`subprocess.run` 不能同时给 `capture_output=True` 和 `stderr=`，要显式写 `stdout=subprocess.PIPE`；验证某个命令"会不会自动建目录"时别用 `/xxx` 当测试路径——Git Bash 会把它转到自己的安装目录下（当天在 Git 安装目录里留下一个测试文件夹，已删）。
+
+## 容器与 Docker（续）
+
+### 56. 用 `timeout` 包住 `docker run --rm` 做自检：客户端被杀了，容器还在跑（2026-11-26）
+
+**现象**：给新构建的 Agent 镜像做启动自检，命令形如 `timeout 14 docker run --rm <镜像>`。到点后命令返回，看上去容器已经结束。一个多小时后 fresh 评审发现有一个随机名字的容器（`exciting_nash`）从自检那一刻起一直在跑，每 30 秒打一行注册失败的日志。
+
+**原因**：`timeout` 杀掉的是本机的 `docker run` 客户端进程，容器本身不受影响，继续在后台运行。`--rm` 只在容器**退出之后**才删容器，而镜像里跑的是不会自己退出的常驻循环，所以永远等不到清理。没指定 `--name`，留下的是一个随机名容器，`docker ps` 里混在别的容器中间不容易被注意到。
+
+**解决**：这类"起来看一眼日志"的自检不要用 `timeout` 包 `docker run`。起一个带固定名字的：`docker run -d --rm --name brp-agent-smoke <镜像>`，看完 `docker logs` 后 `docker stop brp-agent-smoke`——`--rm` 会在停止后自动删除。收工前用 `docker ps -a` 核对没有计划外的容器。教训：**`--rm` 管的是"退出后删除"，不保证进程会退出**；让容器停下来的动作要显式做，不能靠杀客户端。
