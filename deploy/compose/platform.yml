@@ -1,5 +1,5 @@
-# 平台运行环境（常驻）—— PostgreSQL + Redis + go 控制面 + agent 占位 + nginx 占位
-# 后续里程碑逐步加入：prometheus（M4）；nginx 第 14 天接入 /api 反代与前端静态资源
+# 平台运行环境（常驻）—— PostgreSQL + Redis + go 控制面 + agent（M2 第 38 天起为真实主循环）+ nginx（前端静态资源 + /api 反代）
+# 后续里程碑逐步加入：prometheus（M4）
 # 启动：task up   或   docker compose -f deploy/compose/platform.yml --env-file deploy/env/.env up -d
 
 services:
@@ -82,8 +82,13 @@ services:
     image: brp-agent:dev
     container_name: brp-agent
     restart: unless-stopped
+    # 固定容器主机名：Agent 以 hostname 为注册幂等键（协议 §2.1，同 hostname 复用 agent_id）。
+    # 不固定则是容器 ID，每次重建都变——每次 up --build 都会多出一行 agent_instance。
+    hostname: brp-agent
     depends_on:
-      - go
+      # 等 go 健康检查通过再起：只保证启动顺序的话，Agent 每次启动都会先撞上一次"连接被拒"再退避重试
+      go:
+        condition: service_healthy
     networks:
       - platform-net
 
