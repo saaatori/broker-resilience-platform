@@ -11,6 +11,7 @@ requests 封装（工程目录 §3.2）。传输纪律（逐日计划 2026-11-24
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -124,6 +125,26 @@ class ControlClient:
             scenario_key=_field(data, "scenario_key", str),
             params_snapshot=_field(data, "params_snapshot", dict),
         )
+
+    def send_event(self, eid: str, seq: int, event_type: str, payload: dict) -> None:
+        """执行事件上报（§2.4）：202（含重复 seq 静默去重）。ts=调用时刻（=事件发生时刻）。"""
+        path = f"/executions/{eid}/events"
+        body = {
+            "seq": seq,
+            "ts": datetime.now(UTC).isoformat(),
+            "type": event_type,
+            "payload": payload,
+        }
+        resp = self._authed_post(path, lambda: body)
+        if resp.status_code != 202:
+            raise _error(path, resp.status_code, resp.text)
+
+    def send_result(self, eid: str, body: dict) -> None:
+        """结果回传（§2.5）：200（first-wins 幂等，重复回传同样 200）。"""
+        path = f"/executions/{eid}/result"
+        resp = self._authed_post(path, lambda: dict(body))
+        if resp.status_code != 200:
+            raise _error(path, resp.status_code, resp.text)
 
     # ---------- 传输 ----------
 

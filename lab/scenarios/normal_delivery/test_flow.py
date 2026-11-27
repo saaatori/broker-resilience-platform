@@ -12,6 +12,7 @@ import json
 import re
 import urllib.request
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -120,6 +121,28 @@ def test_normal_delivery_end_to_end(params, task_id, recorder_url, run_helper, r
     # ④.5 指标与断言（day25 万条验收全链消费：metrics 吃权威面 counts + 全量 events）
     metrics = compute_metrics(result, events=events)
     verdict = evaluate_assertions(metrics, resolve_assertions(params))
+
+    # ④.6 结果落盘（day40 runner 契约）：results.json 写在子进程 CWD（=工作目录），
+    # 键集 = result schema 的 summary/reconciliation（与 day28 round-trip 钉子同源）。
+    # 写在 verdict 断言之前：断言失败（FAIL）时证据仍在——runner 对 rc≠0 也读回 results。
+    Path("results.json").write_text(
+        json.dumps({
+            "summary": {
+                **{k: result[k] for k in (
+                    "sent", "confirmed", "delivered", "processed_unique", "acked", "dup_business",
+                )},
+                **metrics,
+                "verdict": verdict["verdict"],
+                "details": verdict["details"],
+            },
+            "reconciliation": {k: result[k] for k in (
+                "dup_business_ids", "sent_not_confirmed", "confirmed_not_delivered",
+                "delivered_not_processed", "processed_not_acked", "total_events",
+            )},
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
     assert verdict["verdict"] == "PASS", f"verdict details: {verdict['details']}"
 
     # ⑤ 队列清零（评审 I-1：内联短开短关——编排期间不持有连接，防 pika 心跳断连）

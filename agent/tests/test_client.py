@@ -9,6 +9,7 @@ import json
 import socket
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -65,7 +66,13 @@ class FakeGo:
                 }
                 with go._lock:
                     go.requests.append(req)
-                status, payload, extra = go.handlers[self.path](req)
+                handler = go.handlers.get(self.path)
+                if handler is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status, payload, extra = handler(req)
                 if isinstance(payload, bytes):
                     data = payload
                 else:
@@ -490,3 +497,53 @@ def test_heartbeat_array_with_wrong_type_is_a_control_plane_error(go):
 
     with pytest.raises(ControlPlaneError, match="'lease_ok'"):
         client.heartbeat([])
+
+
+# ---------- 第 40 天：events / result 回传 ----------
+
+
+def test_send_event_wire_and_202(go):
+    client = new_client(go, **{"/api/v1/executions/eid-1/events": lambda req: (202, None, {})})
+
+    client.send_event("eid-1", 3, "STATUS", {"substate": "PREPARING"})
+
+    (sent,) = go.to("/api/v1/executions/eid-1/events")
+    assert token_of(sent) == "token-1"
+    assert sent["body"]["seq"] == 3
+    assert sent["body"]["type"] == "STATUS"
+    assert sent["body"]["payload"] == {"substate": "PREPARING"}
+    ts = sent["body"]["ts"]
+    datetime.fromisoformat(ts)  # RFC3339 带时区
+    assert ts.endswith("+00:00") and "T" in ts
+
+
+def test_send_event_duplicate_seq_is_accepted(go):
+    """重复 seq 由 Go 幂等去重（§2.4）——Agent 侧同样按 202 处理，不本地去重。"""
+    client = new_client(go, **{"/api/v1/executions/eid-1/events": lambda req: (202, None, {})})
+
+    client.send_event("eid-1", 0, "STATUS", {"substate": "CLAIMED"})
+    client.send_event("eid-1", 0, "STATUS", {"substate": "CLAIMED"})
+
+    assert len(go.to("/api/v1/executions/eid-1/events")) == 2
+
+
+def test_send_result_wire_and_200(go):
+    body = {"attempt": 1, "status": "COMPLETED", "summary": {}, "reconciliation": {}, "artifacts": []}
+    client = new_client(go, **{"/api/v1/executions/eid-1/result": lambda req: (200, {"status": "ok"}, {})})
+
+    client.send_result("eid-1", body)
+
+    (sent,) = go.to("/api/v1/executions/eid-1/result")
+    assert token_of(sent) == "token-1"
+    assert sent["body"] == body
+
+
+def test_send_result_error_mapping(go):
+    client = new_client(
+        go, **{"/api/v1/executions/eid-1/result": lambda req: (400, {"error": "结果不合法"}, {})}
+    )
+
+    with pytest.raises(ControlPlaneError) as excinfo:
+        client.send_result("eid-1", {"attempt": 1})
+
+    assert excinfo.value.status == 400

@@ -1,17 +1,20 @@
-"""BRP 执行面 Agent 入口（M2 第 38 天）：注册 → 心跳循环 → 领取执行 → 执行。
+"""BRP 执行面 Agent 入口（M2 第 40 天）：注册 → 心跳循环 → 领取执行 → 执行 → 回传。
 
-执行器尚未接入（runner 第 39 天、端到端第 40 天）：当前领到任务即放弃——不续租约，
-任务由控制面在租约过期后收口为 FAILED(lease_lost)，不会卡死。
+执行链（executor/execution.py）：STATUS 事件序列 + 实验环境生命周期（envmgr）
++ pytest 子进程（runner）+ 结果回传。取消/失联的中止响应由 AgentLoop 经 AbortSignal 传入。
 """
 
+import functools
 import logging
 import os
 import socket
 
-from executor.client import DEFAULT_BASE_URL, ClaimedTask, ControlClient
-from executor.loop import AbortSignal, AgentLoop
+from executor.client import DEFAULT_BASE_URL, ControlClient
+from executor.execution import SCENARIOS_ROOT
+from executor.execution import execute as run_execution
+from executor.loop import AgentLoop
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,19 +23,11 @@ logging.basicConfig(
 log = logging.getLogger("brp-agent")
 
 
-def _execute_placeholder(task: ClaimedTask, abort: AbortSignal) -> None:
-    """占位执行器：真实执行（runner / 回传）随第 39、40 天接入，接口不变。"""
-    log.warning(
-        "执行器未接入，执行放弃（租约过期后由控制面收口）：task=%s exec=%s",
-        task.task_id,
-        task.execution_id,
-    )
-
-
 def main() -> None:
     base_url = os.environ.get("BRP_API_BASE_URL", DEFAULT_BASE_URL)
     client = ControlClient(base_url)
-    loop = AgentLoop(client, _execute_placeholder, hostname=socket.gethostname(), version=VERSION)
+    execute = functools.partial(run_execution, client=client, scenarios_root=SCENARIOS_ROOT)
+    loop = AgentLoop(client, execute, hostname=socket.gethostname(), version=VERSION)
     try:
         loop.run()
     except KeyboardInterrupt:
