@@ -1,0 +1,25 @@
+# agent 镜像以仓库根为构建上下文（lab/ deploy/ 同装，day40）——只留运行时资产。
+# backend/frontend 用各自目录为上下文，不受本文件影响。
+backend/
+frontend/
+docs/
+.superpowers/
+work/
+.git/
+node_modules/
+**/__pycache__/
+**/*.pyc
+.venv/
+agent/tests/
+agent/.pytest_cache/
+agent/.ruff_cache/
+agent/.env
+lab/tests/
+lab/.pytest_cache/
+*.md
+Jenkinsfile
+Taskfile.yml
+pytest.ini
+AGENTS.md
+# 平台口令绝不进任何镜像（评审 I-1：整目录 COPY deploy/ 曾把 .env 带进 agent 镜像）
+deploy/env/

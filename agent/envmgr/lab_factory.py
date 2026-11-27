@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import sys
+import tarfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -240,6 +242,9 @@ def _get_or_create_container(client, spec: ServiceSpec):
         _ensure_labels("container", container.name, container.labels, spec.labels)
         return container
     except NotFound:
+        # toxiproxy 配置不走 bind：bind 源路径只在工厂与 daemon 同文件系统视图时有效
+        # （M1 宿主直跑）；工厂跑在 agent 容器内时 /work 卷路径对 daemon（VM 视图）不可达，
+        # bind 会静默变空目录（#17 同型）。create 时剥离，start 前经 put_archive 注入（见 up）。
         return client.containers.create(
             spec.image,
             spec.command,
@@ -249,8 +254,27 @@ def _get_or_create_container(client, spec: ServiceSpec):
             mem_limit=spec.mem_limit,
             nano_cpus=spec.nano_cpus,
             healthcheck=spec.healthcheck,
-            mounts=spec.mounts,
+            mounts=[m for m in spec.mounts if m["target"] != TOXIPROXY_MOUNT_TARGET],
         )
+
+
+def _inject_toxiproxy(container, rendered: RenderedLab) -> None:
+    """渲染版 toxiproxy.json 注入容器（put_archive = docker cp 语义，与双方路径无关）。
+
+    模板仍是唯一事实源：mount 声明（target=/etc/toxiproxy/toxiproxy.json）表达
+    "该文件进该路径"，注入机制从 bind 改为 cp——对宿主直跑与容器内运行同样成立。
+    """
+    data = rendered.toxiproxy_path.read_bytes()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        # 成员带相对路径 toxiproxy/toxiproxy.json、目标 /etc：cp 会创建缺失的父目录——
+        # 直接打 /etc/toxiproxy 会 404（镜像里没有该目录，bind 时代由挂载隐式创建）
+        info = tarfile.TarInfo(name=f"toxiproxy/{rendered.toxiproxy_path.name}")
+        info.size = len(data)
+        info.mode = 0o644
+        tar.addfile(info, io.BytesIO(data))
+    buf.seek(0)
+    container.put_archive("/etc", buf)
 
 
 def _wait_healthy(client, spec: ServiceSpec, timeout_s: float, poll_interval_s: float) -> None:
@@ -290,6 +314,8 @@ def up(client, rendered: RenderedLab, healthy_timeout_s: float | None = None,
     for spec in rendered.services:
         container = _get_or_create_container(client, spec)
         if container.attrs["State"]["Status"] != "running":
+            if any(m["target"] == TOXIPROXY_MOUNT_TARGET for m in spec.mounts):
+                _inject_toxiproxy(container, rendered)  # 幂等：未运行的（含收养的）都重注入
             container.start()
     for spec in rendered.services:
         if spec.healthcheck:

@@ -78,7 +78,10 @@ services:
       retries: 10
 
   agent:
-    build: ../../agent
+    # 构建上下文=仓库根：lab/ 与 deploy/ 模板同装进镜像（day23 M-10 / day40）
+    build:
+      context: ../..
+      dockerfile: agent/Dockerfile
     image: brp-agent:dev
     container_name: brp-agent
     restart: unless-stopped
@@ -89,6 +92,11 @@ services:
       # 等 go 健康检查通过再起：只保证启动顺序的话，Agent 每次启动都会先撞上一次"连接被拒"再退避重试
       go:
         condition: service_healthy
+    volumes:
+      # docker.sock：agent 经 Docker SDK 拉起/销毁实验容器（label 白名单，决策 8）
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 执行工作目录（params.json / 渲染件 / pytest.log / results.json；runner WORK_ROOT=/work）
+      - brp_agent_work:/work
     networks:
       - platform-net
 
@@ -118,3 +126,5 @@ volumes:
     name: brp_pgdata
   brp_redisdata:
     name: brp_redisdata
+  brp_agent_work:
+    name: brp_agent_work

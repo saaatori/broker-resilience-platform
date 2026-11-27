@@ -23,6 +23,7 @@ class FakeContainer:
         self.create_kwargs = None
         self.started = False
         self.removed = False
+        self.archives = []
         self._status = status
         self._health_schedule = list(health_schedule or [])
         self.attrs = {"State": {"Status": status}}
@@ -40,6 +41,16 @@ class FakeContainer:
 
     def remove(self, force=False):
         self.removed = True
+
+    def put_archive(self, path, data):
+        """docker cp 语义（day40）：解包 tar 记录注入目标与文件内容（断言真实载荷）。"""
+        import io as _io
+        import tarfile as _tarfile
+
+        with _tarfile.open(fileobj=_io.BytesIO(data.read())) as tar:
+            member = tar.getmember("toxiproxy/toxiproxy.json")
+            content = tar.extractfile(member).read()
+        self.archives.append((path, content))
 
 
 class FakeNetwork:
@@ -223,15 +234,10 @@ def test_up_creates_network_volume_and_five_containers(tmp_path):
     assert hc["start_period"] == 15 * 10**9
 
     proxy = next(c for c in client.created_containers if c.name == "brp_t17_proxy")
-    rendered_json = rendered.toxiproxy_path.resolve().as_posix()
-    assert proxy.create_kwargs["mounts"] == [
-        {
-            "source": rendered_json,
-            "target": "/etc/toxiproxy/toxiproxy.json",
-            "type": "bind",
-            "read_only": True,
-        }
-    ]
+    # toxiproxy 配置不走 bind（容器内运行时 bind 源对 daemon 不可达，#17 同型）：
+    # create 时剥离，start 前 put_archive 注入渲染文件（模板仍是唯一事实源）
+    assert proxy.create_kwargs["mounts"] == []
+    assert proxy.archives == [("/etc", rendered.toxiproxy_path.read_bytes())]
 
     recorder = next(c for c in client.created_containers if c.name == "brp_t17_recorder")
     assert recorder.create_kwargs["mounts"] == [
@@ -263,6 +269,25 @@ def test_up_is_idempotent_under_partial_failure(tmp_path):
     assert len(client.created_containers) == 4  # 只补缺的四容器
     assert not existing_broker.started  # 存量 running 不重启
     assert not client.created_networks  # 网络已存在不重建
+
+
+def test_up_does_not_reinject_into_running_proxy(tmp_path):
+    """运行中的存量 proxy 不重复注入（配置已读入，重注入无意义且可能被只读层拒绝）。"""
+    running_proxy = FakeContainer(
+        "brp_t17_proxy",
+        {"brp.task": "t17", "brp.execution": "eid17", "brp.role": "proxy"},
+        status="running",
+    )
+    client = FakeDockerClient(
+        containers=[running_proxy],
+        networks=[FakeNetwork("brp_task_t17", {"brp.task": "t17", "brp.execution": "eid17"})],
+    )
+    rendered = make_rendered(tmp_path)
+
+    up(client, rendered, healthy_timeout_s=2, poll_interval_s=0)
+
+    assert not running_proxy.started  # 同名存量被收养（幂等），不重启
+    assert running_proxy.archives == []  # 运行中不重复注入
 
 
 def test_up_waits_for_declared_healthchecks(tmp_path):

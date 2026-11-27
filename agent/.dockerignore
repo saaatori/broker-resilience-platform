@@ -1,9 +1,0 @@
-# 构建上下文只需运行时资产（Dockerfile 只 COPY pyproject/uv.lock/main.py/executor/）。
-# 注意：不带 / 的模式只匹配上下文根这一层，子目录必须写 **/ 前缀。
-.venv
-tests
-**/__pycache__
-**/*.pyc
-.pytest_cache
-.ruff_cache
-.env
