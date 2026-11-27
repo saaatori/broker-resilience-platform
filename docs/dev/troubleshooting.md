@@ -520,3 +520,29 @@
 **原因**：翻转条件是"超时判定本身被调度推迟到取消置位之后"——此时取消确实先可见，产品语义（先触发者定格）自洽，翻的只是这条测试。双窗口夹缝（既要晚于 A 又要早于 B）里的定时器，裕量按"调度抖动上界"留，不按"本机空载观察"留。
 
 **解决**：该用例改用独立时序（超时@0.5 / 取消@0.65 / 升级@0.9，两侧各 150ms），10 轮复跑全绿。教训：**夹缝断言的裕量至少百毫秒级**，且尽量不与其他用例共享 FAST 参数——调一个公共参数会在看不见的地方挪动别人的夹缝。
+
+## Docker 与子进程（续）
+
+### 59. put_archive 到不存在的目录直接 404：bind 会隐式建目录，docker cp 不会（2026-11-27）
+
+**现象**：实验工厂挪进 agent 容器后，toxiproxy 配置从 bind 挂载改为 `container.put_archive("/etc/toxiproxy", …)` 注入，报 `404 … Could not find the file /etc/toxiproxy in container …`。配置文件路径没错——错的是**目标目录**：toxiproxy 镜像里没有 `/etc/toxiproxy` 目录。
+
+**原因**：bind mount 会在挂载时隐式创建目标路径；docker cp（put_archive）是纯文件复制，不建目录，目标目录不存在就 404。之前该目录的存在是挂载机制的副作用，不是镜像自带的。
+
+**解决**：tar 成员名带相对路径 `toxiproxy/toxiproxy.json`、目标打到已存在的 `/etc`——cp 解包时会创建缺失的父目录。教训：**从挂载迁移到 cp 时，检查目标目录是否真的存在于镜像里**；"路径以前能用"证明的是挂载语义，不是目录存在。
+
+### 60. docker logs 的输出分两路：容器 stdout/stderr 各走一边，Python logging 默认写 stderr（2026-11-27）
+
+**现象**：验收脚本用 `subprocess.run(["docker","logs",…], capture_output=True)` 取 agent 日志做断言，`.stdout` 是空的——但终端里 `docker logs` 明明看得到全部日志（含 ERROR 行）。
+
+**原因**：`docker logs` 把容器的 stdout 转发到自己的 stdout、容器的 stderr 转发到自己的 stderr，**不合并**；而 Python logging 默认 `StreamHandler(stderr)`——agent 的全部日志都在容器 stderr 一路。终端里看得到，是因为交互 shell 里两路都显示。顺带：同一天第三次踩 `capture_output=True` 与 `stderr=` 互斥（#55 同族）——要合并流时显式写 `stdout=PIPE, stderr=STDOUT`。
+
+**解决**：读容器日志一律 `stderr=subprocess.STDOUT` 合并后取 stdout；或让应用侧 logging 指定 stream=sys.stdout。教训：**"终端里看得到"≠"程序里读得到"——先问输出走的哪条流**；脚本断言依赖的日志取不到时，先打印长度再打印内容。
+
+### 61. Dockerfile 的 `COPY 目录/ ./` 拷的是目录内容：多目录混合拷贝被拍平（2026-11-27）
+
+**现象**：`COPY agent/main.py agent/executor/ agent/runner/ ./` 构建后镜像里没有 `executor/` 子目录——`client.py`、`loop.py` 直接躺在目标层，`import executor` 失败。
+
+**原因**：COPY 的每条源各自相对目标解析：文件源落到 `./` 之下，**目录源拷贝的是其内容**（等价 `COPY agent/executor/. ./`）。混写文件与多个目录源到同一 `./`，目录结构就被拍平了。
+
+**解决**：整目录拷 `COPY agent/ /brp/agent/`（保持结构），排除项交给 `.dockerignore`；确要拆开拷就逐个指明目标子目录（`COPY agent/executor/ /brp/agent/executor/`）。教训：**COPY 语义是"内容进目标"，不是"源名进目标"**——构建后 `ls` 一下镜像里的实际布局再继续（与 #51 同一族的"配了≠生效了"）。
