@@ -6,8 +6,10 @@
 # 手跑 runner 须另挂 agent 卷；M2 打包若场景随 agent 容器跑则无此问题，若独立打包须双向 COPY。
 FROM python:3.13-slim
 
+# 安装源可经构建参数覆盖（day40：锁内清华镜像 403，与 agent/Dockerfile 同口径；默认 pypi.org）
+ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r /tmp/requirements.txt
+RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r /tmp/requirements.txt
 
 COPY . /app/lab
 ENV PYTHONPATH=/app
