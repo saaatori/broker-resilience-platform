@@ -494,3 +494,38 @@ def test_wait_healthy_fails_fast_on_unhealthy(tmp_path):
 
     with pytest.raises(RuntimeError, match="unhealthy"):
         up(client, make_rendered(tmp_path), healthy_timeout_s=5, poll_interval_s=0)
+
+
+# ---------- day41 评审 M-2：健康等待期取消打断 ----------
+
+
+def test_wait_healthy_aborts_immediately_when_set(tmp_path):
+    """abort 置位时 _wait_healthy 立即抛 LabCancelled——不等超时（up 期取消秒级收敛）。"""
+    from envmgr.lab_factory import LabCancelled, _wait_healthy, render_lab
+
+    rendered = render_lab("t41a", "eid41a", tmp_path)
+    broker = next(s for s in rendered.services if s.role == "broker")
+    client = FakeDockerClient(health_schedule=[])  # 恒不 healthy
+
+    with pytest.raises(LabCancelled, match="broker"):
+        _wait_healthy(client, broker, timeout_s=30, poll_interval_s=0, abort=lambda: True)
+
+
+def test_wait_healthy_abort_none_keeps_old_behavior(tmp_path):
+    from envmgr.lab_factory import render_lab, up
+
+    client = FakeDockerClient(health_schedule=["healthy"])
+    rendered = render_lab("t41b", "eid41b", tmp_path)
+
+    up(client, rendered, healthy_timeout_s=2, poll_interval_s=0, abort=None)  # 不抛即过（老行为）
+
+
+def test_up_passes_abort_into_health_wait(tmp_path):
+    """up 把 abort 传给 _wait_healthy：置位时整段 up 抛 LabCancelled（不等到自身超时）。"""
+    from envmgr.lab_factory import LabCancelled, render_lab, up
+
+    client = FakeDockerClient(health_schedule=[])  # broker 恒不 healthy
+    rendered = render_lab("t41c", "eid41c", tmp_path)
+
+    with pytest.raises(LabCancelled):
+        up(client, rendered, healthy_timeout_s=30, poll_interval_s=0, abort=lambda: True)

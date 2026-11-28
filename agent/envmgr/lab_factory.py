@@ -33,6 +33,10 @@ NS_PER_SECOND = 1_000_000_000
 TOXIPROXY_MOUNT_TARGET = "/etc/toxiproxy/toxiproxy.json"
 HEALTHY_MARGIN_S = 15.0  # 推导健康等待时的固定余量
 
+
+class LabCancelled(RuntimeError):
+    """健康等待期取消（abort 置位）——调用方应按取消而非失败收敛（day41 评审 M-2）。"""
+
 log = logging.getLogger("brp-lab-factory")
 
 
@@ -277,9 +281,14 @@ def _inject_toxiproxy(container, rendered: RenderedLab) -> None:
     container.put_archive("/etc", buf)
 
 
-def _wait_healthy(client, spec: ServiceSpec, timeout_s: float, poll_interval_s: float) -> None:
+def _wait_healthy(client, spec: ServiceSpec, timeout_s: float, poll_interval_s: float,
+                  abort=None) -> None:
     deadline = time.monotonic() + timeout_s
     while True:
+        if abort is not None and abort():
+            # 取消打断（day41 评审 M-2）：up 期取消不再等到自身超时/健康——
+            # CANCELLING 后心跳停续租，45s 闭环预算等不起 ~90s 的健康上限
+            raise LabCancelled(f"container {spec.name} health wait cancelled")
         container = client.containers.get(spec.name)
         container.reload()
         status = container.attrs["State"].get("Health", {}).get("Status")
@@ -304,10 +313,12 @@ def _derived_healthy_timeout_s(spec: ServiceSpec) -> float:
 
 
 def up(client, rendered: RenderedLab, healthy_timeout_s: float | None = None,
-       poll_interval_s: float = 2.0) -> dict:
+       poll_interval_s: float = 2.0, abort=None) -> dict:
     """拉起实验环境（get-or-create 幂等），等待声明的 healthcheck 全部转 healthy。
 
     healthy_timeout_s 缺省时按各服务模板 healthcheck 推导（模板是唯一事实源）。
+    abort（返回 bool 的可调用，如 AbortSignal.is_set）置位时健康等待抛 LabCancelled——
+    day41 评审 M-2：CANCELLING 后心跳停续租，45s 闭环预算等不起最长 ~90s 的健康上限。
     """
     net = _get_or_create_network(client, rendered)
     volume = _get_or_create_volume(client, rendered)
@@ -324,7 +335,7 @@ def up(client, rendered: RenderedLab, healthy_timeout_s: float | None = None,
                 if healthy_timeout_s is not None
                 else _derived_healthy_timeout_s(spec)
             )
-            _wait_healthy(client, spec, timeout, poll_interval_s)
+            _wait_healthy(client, spec, timeout, poll_interval_s, abort=abort)
     log.info(
         "lab up: task=%s net=%s volume=%s containers=%d",
         rendered.task_id, net.name, volume.name, len(rendered.services),
