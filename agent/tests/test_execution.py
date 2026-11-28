@@ -177,7 +177,7 @@ class FakeEnv:
         self.render_calls.append((task_id, execution_id, out_dir))
         return SimpleNamespace(task_id=task_id, execution_id=execution_id, net_name=f"brp_task_{task_id}")
 
-    def up(self, docker_client, rendered):
+    def up(self, docker_client, rendered, abort=None):
         self.up_calls.append(rendered.net_name)
         if self.up_error:
             raise self.up_error
@@ -200,6 +200,7 @@ def wired(monkeypatch, tmp_path):
         pass
 
     ctl = Control()
+    ctl.monkeypatch = monkeypatch  # 测试体内重新接管协作方（覆盖 fixture 期绑定）
     ctl.control = FakeControl()
     ctl.docker = FakeDocker()
     ctl.env = FakeEnv()
@@ -363,3 +364,80 @@ def test_assemble_failure_falls_back_to_error(wired):
     ((_, body),) = ctl.control.results
     assert body["status"] == "FAILED" and body["failure"]["reason"] == "error"
     assert body["summary"]["verdict"] == "FAIL"  # 合成兜底
+
+
+# ---------- Task 2（day41）：取消路径——环境段检查点 + ABORTED 事件先于 result ----------
+
+
+def test_abort_before_env_skips_to_cancelled(wired):
+    """领取后立即取消：不发 BASELINE、不碰环境、清理照走、ABORTED 事件先于 result。"""
+    ctl = wired
+    abort = threading.Event()
+    abort.set()
+
+    run_execute(ctl, abort=abort)
+
+    assert substates_of(ctl.control) == ["CLAIMED", "PREPARING", "ABORTED"]
+    assert ctl.env.up_calls == []  # 环境未拉起
+    assert ctl.env.down_calls == []  # 未拉起无资源可清（_teardown 对 None 直接返回）
+    ((_, body),) = ctl.control.results
+    assert body["status"] == "CANCELLED" and "failure" not in body
+    timeline = ctl.control.timeline
+    assert timeline.index(("event", "ABORTED")) < timeline.index(("result", "CANCELLED"))
+    assert ctl.env.run_calls == []  # runner 未起
+
+
+def test_abort_during_env_phase_caught_at_checkpoint(wired):
+    """环境拉起中途取消：up 之后的检查点拦住，不再 connect/setup_broker/起 runner。"""
+    ctl = wired
+    abort = threading.Event()
+    original_up = ctl.env.up
+
+    def up_then_abort(docker_client, rendered, **kw):
+        original_up(docker_client, rendered)
+        abort.set()  # 外层 Event（kw 里的 abort=is_set 函数，不遮蔽）
+
+    # fixture 的 monkeypatch 绑定的是原 bound method——测试里须重新接管才生效
+    ctl.monkeypatch.setattr(execution.lab_factory, "up", up_then_abort)
+
+    run_execute(ctl, abort=abort)
+
+    assert ctl.env.up_calls == ["brp_task_40"]
+    assert all(net.connected == [] for net in ctl.docker.networks.map.values())  # connect 未发生
+    assert ctl.docker.setup_calls == []
+    assert ctl.env.run_calls == []
+    ((_, body),) = ctl.control.results
+    assert body["status"] == "CANCELLED"
+    assert substates_of(ctl.control) == ["CLAIMED", "PREPARING", "ABORTED"]
+
+
+def test_up_cancelled_converges_to_cancelled(wired):
+    """up 健康等待期取消（LabCancelled，评审 M-2）：收敛为 result(CANCELLED) 而非 FAILED。"""
+    ctl = wired
+    from envmgr.lab_factory import LabCancelled
+
+    def up_cancelled(docker_client, rendered, **kw):
+        ctl.env.up_calls.append(rendered.net_name)
+        raise LabCancelled("container brp_40_broker health wait cancelled")
+
+    ctl.monkeypatch.setattr(execution.lab_factory, "up", up_cancelled)
+
+    run_execute(ctl)
+
+    ((_, body),) = ctl.control.results
+    assert body["status"] == "CANCELLED" and "failure" not in body
+    assert substates_of(ctl.control) == ["CLAIMED", "PREPARING", "ABORTED"]
+    assert ctl.env.down_calls == [("40", "eid-1")]
+    assert ctl.env.run_calls == []
+
+
+def test_runner_abort_emits_aborted_event_too(wired):
+    """runner 段取消（day39 outcome）：同样先发 ABORTED 再回传 result(CANCELLED)。"""
+    ctl = wired
+    ctl.env.outcome = outcome(status="ABORTED", exit_code=-15, aborted=True)
+
+    run_execute(ctl)
+
+    timeline = ctl.control.timeline
+    assert timeline.index(("event", "ABORTED")) < timeline.index(("result", "CANCELLED"))
+    assert substates_of(ctl.control) == ["CLAIMED", "PREPARING", "BASELINE", "UPLOADING", "ABORTED"]

@@ -1,8 +1,9 @@
 """executor/execution.py（M2 第 40 天）：execute 编排——环境生命周期 + 事件序列 + runner + 回传。
 
 把 day38 的执行注入位、day39 的 runner、实验环境工厂与协议回传拼成端到端执行流：
-    STATUS(CLAIMED) → PREPARING(环境拉起) → BASELINE(setup 完成，起 pytest)
-    → UPLOADING(runner 返回) → [清理] → result 回传 → STATUS(DONE)
+    STATUS(CLAIMED) → PREPARING(环境拉起，段间取消检查点) → BASELINE(setup 完成，起 pytest)
+    → UPLOADING(runner 返回) → [清理] → STATUS(DONE|ABORTED) → result 回传
+（终态子状态事件先于 result——Go 对终态后事件只记录不广播，day40 记档）
 失败/取消路径收敛为同一收尾：清理（disconnect + label 白名单 down）→ result 回传。
 回传在 execute 返回前完成（day38 契约：返回即出在跑表、心跳停续租）；
 result 落库后 Go 将执行置 DONE，此后心跳差集会给出 lease_lost 中止——按 day38 M7 记档当空操作。
@@ -110,19 +111,36 @@ def execute(
     try:
         status("CLAIMED")
         status("PREPARING")
+        _abort_checkpoint(abort)
         docker = dc.get_client()
         rendered = lab_factory.render_lab(
             task.task_id, task.execution_id, Path(work_root) / task.execution_id / "lab"
         )
-        lab_factory.up(docker, rendered)
+        lab_factory.up(docker, rendered, abort=abort.is_set)
+        _abort_checkpoint(abort)
         docker.networks.get(rendered.net_name).connect(agent_container)
+        _abort_checkpoint(abort)
         _setup_broker(docker, rendered, task.task_id)
+        _abort_checkpoint(abort)
         status("BASELINE")
         runner_outcome = run_scenario(
             task, abort, scenarios_root=Path(scenarios_root),
             work_root=work_root, total_timeout_s=total_timeout_s,
         )
         status("UPLOADING")
+    except _Cancelled:
+        log.info("取消到达（环境段检查点）：task=%s exec=%s", task.task_id, task.execution_id)
+        runner_outcome = RunnerOutcome(
+            status="ABORTED", exit_code=None, timed_out=False, aborted=True,
+            failure=None, results=None, duration_s=0.0,
+        )
+    except lab_factory.LabCancelled:
+        # up 健康等待期取消（评审 M-2）：同检查点口径收敛为 CANCELLED，不误判 FAILED/error
+        log.info("取消到达（环境健康等待）：task=%s exec=%s", task.task_id, task.execution_id)
+        runner_outcome = RunnerOutcome(
+            status="ABORTED", exit_code=None, timed_out=False, aborted=True,
+            failure=None, results=None, duration_s=0.0,
+        )
     except Exception as e:
         log.exception("环境/执行阶段失败：task=%s exec=%s", task.task_id, task.execution_id)
         runner_outcome = RunnerOutcome(
@@ -143,12 +161,24 @@ def execute(
             results=None, duration_s=0.0,
         )
         doc = assemble_result(task, runner_outcome)
-    # DONE 先于 result（§2.5 收口归属：先经 STATUS 上报终态子状态不影响 result 收口；
-    # 反序则 DONE 落在任务终态之后——Go 侧只记录不广播（events.go 终态兜底），前端看不到 DONE）
+    # 终态子状态事件先于 result（§2.5 收口归属：先经 STATUS 上报终态子状态不影响 result 收口；
+    # 反序则事件落在任务终态之后——Go 侧只记录不广播（events.go 终态兜底），前端看不到）
     if runner_outcome.status == "COMPLETED":
         status("DONE")
+    elif runner_outcome.status == "ABORTED":
+        status("ABORTED")  # §4 取消闭环时序：ABORTED →（清理已毕）→ result(CANCELLED)
     _send_result(client, task, doc)
     log.info("执行收尾：task=%s exec=%s status=%s", task.task_id, task.execution_id, doc["status"])
+
+
+class _Cancelled(Exception):
+    """环境段取消检查点信号（内部，不外泄——收敛为 result(CANCELLED)）。"""
+
+
+def _abort_checkpoint(abort) -> None:
+    """环境段步骤间的取消检查点（day40 评审 M-5）：取消已到则不再拉起后续步骤。"""
+    if abort.is_set():
+        raise _Cancelled from None
 
 
 def _setup_broker(docker, rendered, task_id: str) -> None:
