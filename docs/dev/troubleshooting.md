@@ -546,3 +546,29 @@
 **原因**：COPY 的每条源各自相对目标解析：文件源落到 `./` 之下，**目录源拷贝的是其内容**（等价 `COPY agent/executor/. ./`）。混写文件与多个目录源到同一 `./`，目录结构就被拍平了。
 
 **解决**：整目录拷 `COPY agent/ /brp/agent/`（保持结构），排除项交给 `.dockerignore`；确要拆开拷就逐个指明目标子目录（`COPY agent/executor/ /brp/agent/executor/`）。教训：**COPY 语义是"内容进目标"，不是"源名进目标"**——构建后 `ls` 一下镜像里的实际布局再继续（与 #51 同一族的"配了≠生效了"）。
+
+## 容器与进程信号
+
+### 62. `docker kill` 不触发 restart 策略：手动操作语义与进程崩溃语义的分界（2026-11-28）
+
+**现象**：失联实验里 `docker kill brp-agent`（`restart: unless-stopped`），预期容器自动拉起——实际 `Exited (137)` 躺平，`RestartCount=0`，两分钟无重启。
+
+**原因**：restart 策略只对**容器自行退出**（进程崩溃/非零退出）生效；`docker kill` 与 `docker stop` 同属 daemon 层的**手动操作**——策略明确排除（文档："if you manually stop a container, its restart policy is ignored"）。想验证"进程崩溃后自动复活"，就不能从 daemon 层杀。
+
+**解决**：从容器内部杀主进程（模拟崩溃）。容器内没有 kill/pkill 二进制时经 Python 扫 `/proc` 发 SIGKILL（cmdline 是 **NUL 分隔**，`python\0main.py`——带空格的匹配串要先归一，否则永远扫不到）。教训：**"杀掉容器"和"杀掉进程"是两条语义通道**——验证自愈行为用后者；写 e2e 断言时 docker 的 `--format` 行式输出不是 JSON，按行拆。
+
+### 63. 裸 Python 作 PID 1：容器内 SIGKILL 也被内核丢弃（2026-11-28）
+
+**现象**：容器内 `kill -9 1` 返回成功（rc=0）但主进程毫发无伤；换成 pkill（slim 镜像没有）也走不通。Python 主进程就是容器的 PID 1，从内部杀不死它。
+
+**原因**：内核对 PID 1 特殊保护——**只为它安装已注册 handler 的信号**，未注册 handler 的信号（含默认行为是终止的 SIGTERM/SIGKILL 的默认处理）一律丢弃；只有内核自身或外部（docker daemon）能杀死 PID 1。裸 Python/Node 作容器入口时都不注册 handler，于是"从内部杀主进程"这条路在物理上不存在。
+
+**解决**：compose 给服务加 `init: true`——tini（docker-init）作 PID 1，真正的应用进程是普通子进程：可被容器内 SIGKILL 杀死；tini 转发退出码后容器退出（非手动）→ restart 策略接管。附带收益：tini 回收僵尸进程（day40 记档的孙进程风险顺带解决），`docker stop` 的 SIGTERM 也经 tini 真正送达应用（此前同样被 PID1 免疫——day37"SIGTERM 走 Python 默认行为"的记档在容器内实际不成立，以此为准）。教训：**容器入口是长命进程就上 init**——信号语义和僵尸回收都是白送的。
+
+### 64. docker-py 的 Volume/Network 没有 `.labels` 属性：单测 fake 建模又漂了（2026-11-28）
+
+**现象**：孤儿清扫的单测全绿；代码进容器一跑就 `AttributeError: 'Volume' object has no attribute 'labels'`——修掉 Volume 后 `Network` 同样报错。docker-py 里只有 `Container` 暴露 `.labels`。
+
+**原因**：fake 按直觉给了三种资源同形的 `.labels` 属性——真实 SDK 里 Volume/Network 的 labels 在 `attrs["Labels"]`。与 #47（fake 仓库省掉真仓库的更新条件）、#54（fake 漏真实现的属性）同族：**fake 建模的是"我以为的 SDK"，不是 SDK**。
+
+**解决**：实现改读 `attrs.get("Labels")`；fake 对齐真实形态（Volume/Network 只给 attrs，不给 .labels）——让单测钉住真实读取路径，下次再有人写 `.labels` 会直接红。教训：**给第三方 SDK 造假件前先 `dir()` 一下真对象**；凡是"单测绿、容器内崩"的 AttributeError，第一 suspects 就是 fake 形态漂移。
