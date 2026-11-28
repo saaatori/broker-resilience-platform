@@ -194,10 +194,12 @@ func TestParseToken(t *testing.T) {
 
 	tamper := func(tok string) string { // 翻转末位字符破坏签名
 		rep := byte('A')
-		if tok[len(tok)-1] == 'A' {
+		if tok[0] == 'A' {
 			rep = 'B'
 		}
-		return tok[:len(tok)-1] + string(rep)
+		// 翻首字符而非末字符：base64url 无填充时末字符低 2 位是 don't care 位，
+		// 末字符落在同组（约 6.25%）时替换后解码字节不变、验签仍过——假通过 flaky（day41 评审 M-8）
+		return string(rep) + tok[1:]
 	}
 
 	tests := []struct {
