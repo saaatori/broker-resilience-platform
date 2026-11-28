@@ -88,6 +88,10 @@ services:
     # 固定容器主机名：Agent 以 hostname 为注册幂等键（协议 §2.1，同 hostname 复用 agent_id）。
     # 不固定则是容器 ID，每次重建都变——每次 up --build 都会多出一行 agent_instance。
     hostname: brp-agent
+    # tini 作 PID 1（day42）：裸 Python 作 PID 1 时内核不给它装默认信号 handler——
+    # 容器内 kill 不死它（SIGKILL 也被丢），失联实验无从做起；docker kill 又是手动操作
+    # （unless-stopped 不重启）。tini 转发信号 + 回收僵尸（顺带解 day40 记档的孙进程风险）。
+    init: true
     depends_on:
       # 等 go 健康检查通过再起：只保证启动顺序的话，Agent 每次启动都会先撞上一次"连接被拒"再退避重试
       go:
