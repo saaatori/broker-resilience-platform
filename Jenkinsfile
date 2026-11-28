@@ -3,7 +3,8 @@
 // 已知边界（记档）：
 // - Go 集成测试在 Jenkins 静默跳过（无 PG/Redis；测试代码缺 BRP_TEST_DSN 即 skip）——单测仍全量；
 // - agent 依赖经 uv export 哈希清单 + pypi.org 安装（清华镜像 403，不能按锁内地址下载，
-//   也不提交换源重锁——AGENTS.md §9）；venv 放 workspace，每次构建重建（干净但慢，可后续加缓存）。
+//   也不提交换源重锁——AGENTS.md §9）；venv 放 workspace 跨构建复用（pip 按哈希清单
+//   幂等安装、版本精确锁定——首次触发实测全绿，2026-11-27）。
 pipeline {
     agent any
     options {
