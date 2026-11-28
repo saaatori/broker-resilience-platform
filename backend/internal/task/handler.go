@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/saaatori/broker-resilience-platform/backend/internal/httpserver"
 	"github.com/saaatori/broker-resilience-platform/backend/internal/middleware"
@@ -71,6 +72,7 @@ func (h *Handler) create(c *gin.Context) {
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/tasks", h.create)
 	rg.GET("/tasks/:id/events", h.streamTaskEvents)
+	rg.POST("/tasks/:id/cancel", h.cancel)
 }
 
 // RegisterAgentRoutes 把 Agent 协议**公开**路由挂载（仅 register——首次无 token）。
@@ -157,6 +159,27 @@ func (h *Handler) postEvent(c *gin.Context) {
 	default:
 		log.Printf("task: events 内部错误: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+	}
+}
+
+// cancel POST /api/v1/tasks/:id/cancel（JWT）：用户取消（协议 v1.0.5 I-2，前端→Go）。
+// 200 {status: 动作后任务态}；404 不存在；409 终态；500 内部。
+func (h *Handler) cancel(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	status, err := h.svc.Cancel(id)
+	switch {
+	case errors.Is(err, ErrCancelConflict):
+		c.JSON(http.StatusConflict, gin.H{"error": "任务已是终态，无法取消"})
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
+	case err != nil:
+		log.Printf("task: cancel 内部错误: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+	default:
+		c.JSON(http.StatusOK, gin.H{"status": status})
 	}
 }
 

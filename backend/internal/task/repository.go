@@ -179,6 +179,16 @@ func (r *Repository) FindExecutionByEID(eid string) (*model.TestExecution, error
 	return &e, nil
 }
 
+// FindActiveExecutionByTaskID 任务的最新执行（day41 取消：DISPATCHED 置标志需解析 eid；
+// attempt 域内同任务至多一条在途——多 attempt 重跑已 CUT，取 id 最大者防御）。
+func (r *Repository) FindActiveExecutionByTaskID(taskID int64) (*model.TestExecution, error) {
+	var e model.TestExecution
+	if err := r.db.Where("task_id = ?", taskID).Order("id DESC").First(&e).Error; err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 // FindTaskByID 任务态查询（events 终态兜底判定用）。
 func (r *Repository) FindTaskByID(id int64) (*model.TestTask, error) {
 	var t model.TestTask

@@ -17,7 +17,9 @@ type fakeTaskRepo struct {
 	tasks         []*model.TestTask
 	scenarios     map[string]*model.TestScenario
 	agents        map[string]*model.AgentInstance
-	agentQueryErr error // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
+	agentQueryErr error                               // 模拟 agent 查询 DB 故障（day31 I-1 同型分叉测试）
+	casHook       func(taskID int64, from, to string) // CAS 前注入并发抢先（day41 评审 I-1）
+	findTaskHook  func()                              // FindTaskByID 后注入状态变化（评审 I-2 复查路径）
 	execViews     []execView
 	execRows      []model.TestExecution
 	sweepViews    []execView
@@ -198,6 +200,7 @@ type fakeEventGate struct {
 	seen          map[string]bool
 	cancelSet     map[string]bool
 	removedCancel map[string]bool
+	setCalled     int // SetCancelFlag 调用计数（day41：断言 RUNNING 取消不置标志）
 	removeFail    bool
 	failErr       error
 }
@@ -221,6 +224,15 @@ func (f *fakeEventGate) CancelFlag(eid string) (bool, error) {
 	return f.cancelSet[eid], nil
 }
 
+func (f *fakeEventGate) SetCancelFlag(eid string) error {
+	if f.failErr != nil {
+		return f.failErr
+	}
+	f.setCalled++
+	f.cancelSet[eid] = true
+	return nil
+}
+
 func (f *fakeEventGate) RemoveCancelFlag(eid string) error {
 	if f.removeFail {
 		return errors.New("redis del down")
@@ -240,7 +252,25 @@ func (f *fakeTaskRepo) FindExecutionByEID(eid string) (*model.TestExecution, err
 	return nil, gorm.ErrRecordNotFound
 }
 
+// FindActiveExecutionByTaskID 最新一条执行（同 fake 语义：按 id 序取末条——attempt 域内唯一在途）。
+func (f *fakeTaskRepo) FindActiveExecutionByTaskID(taskID int64) (*model.TestExecution, error) {
+	var latest *model.TestExecution
+	for i := range f.execRows {
+		if f.execRows[i].TaskID == taskID {
+			cp := f.execRows[i]
+			latest = &cp
+		}
+	}
+	if latest == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return latest, nil
+}
+
 func (f *fakeTaskRepo) FindTaskByID(id int64) (*model.TestTask, error) {
+	if f.findTaskHook != nil {
+		f.findTaskHook()
+	}
 	for _, t := range f.tasks {
 		if t.ID == id {
 			cp := *t
@@ -252,6 +282,10 @@ func (f *fakeTaskRepo) FindTaskByID(id int64) (*model.TestTask, error) {
 
 // TransitionTaskStatus CAS 语义：仅当前态=from 才置 to。
 func (f *fakeTaskRepo) TransitionTaskStatus(taskID int64, from, to string) (bool, error) {
+	if f.casHook != nil {
+		// 并发抢先注入（day41 评审 I-1）：CAS 前改任务态并令本次 CAS 不中——模拟 claim/result 抢先
+		f.casHook(taskID, from, to)
+	}
 	for _, t := range f.tasks {
 		if t.ID == taskID && t.Status == from {
 			t.Status = to
