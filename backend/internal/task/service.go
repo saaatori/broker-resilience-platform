@@ -49,6 +49,9 @@ type taskRepository interface {
 	// Events 四方法（day34）：归属查询 / 任务态查询 / CAS 转移 / 子状态更新。
 	FindExecutionByEID(eid string) (*model.TestExecution, error)
 	FindTaskByID(id int64) (*model.TestTask, error)
+	// FindActiveExecutionByTaskID 任务的最新执行（day41 取消：DISPATCHED 置标志需解析 eid；
+	// attempt 域内同任务至多一条在途执行——多 attempt 重跑已 CUT）。
+	FindActiveExecutionByTaskID(taskID int64) (*model.TestExecution, error)
 	// TransitionTaskStatus CAS 状态转移：仅当当前态=from 时置 to，返回是否发生转移（幂等）。
 	TransitionTaskStatus(taskID int64, from, to string) (bool, error)
 	UpdateExecSubstate(eid, substate string) error
